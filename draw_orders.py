@@ -4,7 +4,8 @@ import matplotlib.backends.backend_pdf
 import networkx as nx
 
 Mace4Reader = uacalc_lib.io.Mace4Reader
-algebras = Mace4Reader.parse_algebra_list_from_file("idempotent_distributive_crl.model")
+OrderedSet = uacalc_lib.lat.OrderedSet
+algebras = list(Mace4Reader.parse_algebra_list_from_file("idempotent_distributive_crl.model"))
 
 # Create PDF file
 pdf_filename = "algebra_orders.pdf"
@@ -82,6 +83,81 @@ def hasse_layout(G):
                 pos[node] = (x, y)
     
     return pos
+
+def get_join_irreducibles_po(join_lattice):
+    """
+    Get join irreducibles as a partial order from a join lattice.
+    
+    A join irreducible element is one that cannot be expressed as the join
+    of two strictly smaller elements.
+    """
+    lattice_universe = join_lattice.universe()
+    
+    # Find the bottom element (the element that is <= all other elements)
+    bottom_element = None
+    for candidate in lattice_universe:
+        is_bottom = True
+        for other in lattice_universe:
+            if not join_lattice.leq(candidate, other):
+                is_bottom = False
+                break
+        if is_bottom:
+            bottom_element = candidate
+            break
+    
+    join_irreducibles = []
+    
+    for elem in lattice_universe:
+        # Skip bottom element - it's not join irreducible
+        if elem == bottom_element:
+            continue
+        
+        # Check if elem is join irreducible
+        # An element is join irreducible if it cannot be written as the join
+        # of two strictly smaller elements (in the lattice order)
+        is_join_irreducible = True
+        for a in lattice_universe:
+            # Skip if a is not strictly less than elem in lattice order
+            if not join_lattice.leq(a, elem) or a == elem:
+                continue
+            for b in lattice_universe:
+                # Skip if b is not strictly less than elem in lattice order
+                if not join_lattice.leq(b, elem) or b == elem:
+                    continue
+                # Check if join(a, b) == elem
+                join_ab = join_lattice.join(a, b)
+                if join_ab == elem:
+                    is_join_irreducible = False
+                    break
+            if not is_join_irreducible:
+                break
+        
+        if is_join_irreducible:
+            join_irreducibles.append(elem)
+    
+    # Create an OrderedSet from join irreducibles
+    # We need to compute upper covers for each join irreducible element
+    upper_covers_list = []
+    for ji in join_irreducibles:
+        covers = []
+        # Find minimal elements among join irreducibles that are greater than ji
+        for other_ji in join_irreducibles:
+            if other_ji != ji and join_lattice.leq(ji, other_ji):
+                # Check if other_ji is minimal (no other ji is between ji and other_ji)
+                is_minimal = True
+                for candidate in join_irreducibles:
+                    if candidate != ji and candidate != other_ji:
+                        if join_lattice.leq(ji, candidate) and join_lattice.leq(candidate, other_ji):
+                            is_minimal = False
+                            break
+                if is_minimal:
+                    covers.append(other_ji)
+        upper_covers_list.append(covers)
+    
+    # Create OrderedSet from join irreducibles
+    # Store original labels for verification
+    jis_po = OrderedSet(join_irreducibles, upper_covers_list, name="JoinIrreducibles")
+    return jis_po, join_irreducibles
     
 for alg in algebras:
     join_op = None
@@ -94,13 +170,28 @@ for alg in algebras:
 
     # View dot as meet for fusion order
     dot_lattice = uacalc_lib.lat.lattice_from_meet("FusionSemiLattice", dot_op)
-    dot_poset = dot_lattice.to_ordered_set(name="FusionSemiLatticePoset")
+    dot_poset = OrderedSet.from_lattice(dot_lattice, name="FusionSemiLatticePoset")
     dot_graph = dot_poset.to_networkx()
 
     # get join irreducibles as a partial order for join lattice
     join_lattice = uacalc_lib.lat.lattice_from_join("JoinLattice", join_op)
-    join_poset = join_lattice.join_irreducibles_po()
+    join_poset, original_join_irreducibles = get_join_irreducibles_po(join_lattice)
+    
+    # Check if labels are preserved
+    join_irreducibles_list = list(join_poset.universe())
     join_graph = join_poset.to_networkx()
+    graph_nodes = list(join_graph.nodes())
+    
+    # If labels were relabeled (e.g., to indices), create a mapping and relabel the graph
+    # The OrderedSet universe preserves the order, so we can map by position
+    if join_irreducibles_list != graph_nodes:
+        # Check if graph nodes are indices (0, 1, 2, ...) 
+        if all(isinstance(n, int) and 0 <= n < len(join_irreducibles_list) for n in graph_nodes):
+            # Graph was relabeled to indices, remap to original labels from OrderedSet universe
+            # The OrderedSet.universe() preserves the order of the original join_irreducibles
+            label_mapping = {graph_nodes[i]: join_irreducibles_list[i] 
+                           for i in range(len(join_irreducibles_list))}
+            join_graph = nx.relabel_nodes(join_graph, label_mapping)
     
     # Create figure with two subplots side by side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
