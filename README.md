@@ -3,16 +3,33 @@ Investigating idemopotent distributive commutative residuated lattices
 
 Create a virtual environment in this folder and activate it:
 
+**On Windows (PowerShell):**
+```powershell
+python -m venv venv
+venv\Scripts\Activate.ps1
+```
+
+**On Linux/Mac:**
 ```bash
 python -m venv venv
 source venv/bin/activate
 ```
 
-Copy the link to the latest release for your platform and python version from [uacalc GitHub Releases](https://github.com/jamiewannenburg/uacalcsrc/releases) and replace the link below with what you copied.
+Install dependencies:
 
 ```bash
-# Install from GitHub Release (replace v0.0.3 with the latest version)
-pip install https://github.com/jamiewannenburg/uacalcsrc/releases/download/v0.0.3/uacalc-0.0.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+# Install uacalc directly from git repository (latest version)
+pip install git+https://github.com/jamiewannenburg/uacalcsrc.git
+pip install networkx
+pip install uacalc[drawing]
+pip install matplotlib
+```
+
+Alternatively, you can install from a GitHub Release wheel file. Copy the link to the latest release for your platform and python version from [uacalc GitHub Releases](https://github.com/jamiewannenburg/uacalcsrc/releases) and install it:
+
+```bash
+# Install from GitHub Release (replace version and wheel filename with latest)
+pip install https://github.com/jamiewannenburg/uacalcsrc/releases/download/v0.0.4/uacalc-0.0.4-cp310-cp310-win_amd64.whl
 pip install networkx
 pip install uacalc[drawing]
 pip install matplotlib
