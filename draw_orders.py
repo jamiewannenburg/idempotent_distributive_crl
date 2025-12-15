@@ -102,19 +102,7 @@ def get_join_irreducibles_po(join_lattice):
         covers = []
         # Get all join irreducibles that are >= ji
         filter_ji = list(join_irreducibles_set.intersection(join_lattice.filter(ji)))
-        # Find minimal elements (upper covers) - elements with no other ji between ji and them
-        for other_ji in filter_ji:
-            if other_ji != ji:
-                # Check if other_ji is minimal (no other ji is between ji and other_ji)
-                is_minimal = True
-                for candidate in filter_ji:
-                    if candidate != ji and candidate != other_ji:
-                        if join_lattice.leq(ji, candidate) and join_lattice.leq(candidate, other_ji):
-                            is_minimal = False
-                            break
-                if is_minimal:
-                    covers.append(other_ji)
-        upper_covers_list.append(covers)
+        upper_covers_list.append(filter_ji)
     
     # Create OrderedSet from join irreducibles
     jis_po = OrderedSet(join_irreducibles, upper_covers_list, name="JoinIrreducibles")
@@ -134,45 +122,51 @@ for alg in algebras:
     dot_poset = OrderedSet.from_lattice(dot_lattice, name="FusionSemiLatticePoset")
     dot_graph = dot_poset.to_networkx()
 
-    # get join irreducibles as a partial order for join lattice
+    # Get lattice
     join_lattice = uacalc_lib.lat.lattice_from_join("JoinLattice", join_op)
-    join_poset, original_join_irreducibles = get_join_irreducibles_po(join_lattice)
-    
-    # Check if labels are preserved
-    join_irreducibles_list = list(join_poset.universe())
+    join_poset = OrderedSet.from_lattice(join_lattice, name="JoinLattice")
     join_graph = join_poset.to_networkx()
-    graph_nodes = list(join_graph.nodes())
+
+    # Get join irreducibles as a partial order and graph
+    # ji_poset, original_join_irreducibles = get_join_irreducibles_po(join_lattice)
+    join_irreducibles_list = list(join_lattice.join_irreducibles())
+    # ji_graph = ji_poset.to_networkx()
     
-    # If labels were relabeled (e.g., to indices), create a mapping and relabel the graph
-    # The OrderedSet universe preserves the order, so we can map by position
-    if join_irreducibles_list != graph_nodes:
-        # Check if graph nodes are indices (0, 1, 2, ...) 
-        if all(isinstance(n, int) and 0 <= n < len(join_irreducibles_list) for n in graph_nodes):
-            # Graph was relabeled to indices, remap to original labels from OrderedSet universe
-            # The OrderedSet.universe() preserves the order of the original join_irreducibles
-            label_mapping = {graph_nodes[i]: join_irreducibles_list[i] 
-                           for i in range(len(join_irreducibles_list))}
-            join_graph = nx.relabel_nodes(join_graph, label_mapping)
-    
-    # Create figure with two subplots side by side
+    # Create figure with three subplots side by side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
     fig.suptitle(alg.name(), fontsize=14, fontweight='bold')
     
     # Draw dot graph (Fusion SemiLattice) using Hasse diagram layout
     pos1 = hasse_layout(dot_graph)
-    nx.draw(dot_graph, pos1, ax=ax1, with_labels=True, node_color='lightblue',
+    # Make normal nodes lightblue and join irreducible darkred
+    node_colors = ['lightblue'] * len(dot_graph.nodes())
+    # for node in join_irreducibles_list:
+    #     node_colors[node] = 'darkred'
+    nx.draw(dot_graph, pos1, ax=ax1, with_labels=True, node_color=node_colors,
             node_size=500, font_size=10, font_weight='bold', arrows=True, 
             arrowsize=15, edge_color='gray')
     ax1.set_title("Fusion SemiLattice", fontsize=10)
     ax1.axis('off')
     
-    # Draw join graph (Join Irreducibles) using Hasse diagram layout
+    # Draw join graph (Join Lattice) using Hasse diagram layout
     pos2 = hasse_layout(join_graph)
-    nx.draw(join_graph, pos2, ax=ax2, with_labels=True, node_color='lightcoral',
-            node_size=500, font_size=10, font_weight='bold', arrows=True,
+    # Make normal nodes lightblue and join irreducible darkred
+    node_colors = ['lightblue'] * len(join_graph.nodes())
+    # for node in join_irreducibles_list:
+    #     node_colors[node] = 'darkred'
+    nx.draw(join_graph, pos2, ax=ax2, with_labels=True, node_color=node_colors,
+            node_size=500, font_size=10, font_weight='bold', arrows=True, 
             arrowsize=15, edge_color='gray')
-    ax2.set_title("Join Irreducibles", fontsize=10)
+    ax2.set_title("Lattice", fontsize=10)
     ax2.axis('off')
+
+    # # Draw join graph (Join Irreducibles) using Hasse diagram layout
+    # pos3 = hasse_layout(ji_graph)
+    # nx.draw(ji_graph, pos3, ax=ax3, with_labels=True, node_color='darkred',
+    #         node_size=500, font_size=10, font_weight='bold', arrows=True,
+    #         arrowsize=15, edge_color='gray')
+    # ax3.set_title("Join Irreducibles", fontsize=10)
+    # ax3.axis('off')
     
     plt.tight_layout()
     pdf.savefig(fig, bbox_inches='tight')
