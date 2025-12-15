@@ -124,12 +124,12 @@ for alg in algebras:
 
     # Get lattice
     join_lattice = uacalc_lib.lat.lattice_from_join("JoinLattice", join_op)
-    join_poset = OrderedSet.from_lattice(join_lattice, name="JoinLattice")
-    join_graph = join_poset.to_networkx()
+    join_graph = join_lattice.to_networkx()
 
     # Get join irreducibles as a partial order and graph
     # ji_poset, original_join_irreducibles = get_join_irreducibles_po(join_lattice)
-    join_irreducibles_list = list(join_lattice.join_irreducibles())
+    join_irreducibles_list = [node for node in join_lattice.universe() if len(join_graph.in_edges(node)) == 1]
+    # print(join_irreducibles_list)
     # ji_graph = ji_poset.to_networkx()
     
     # Create figure with three subplots side by side
@@ -140,8 +140,8 @@ for alg in algebras:
     pos1 = hasse_layout(dot_graph)
     # Make normal nodes lightblue and join irreducible darkred
     node_colors = ['lightblue'] * len(dot_graph.nodes())
-    # for node in join_irreducibles_list:
-    #     node_colors[node] = 'darkred'
+    for node in join_irreducibles_list:
+        node_colors[node] = 'lightgreen'
     nx.draw(dot_graph, pos1, ax=ax1, with_labels=True, node_color=node_colors,
             node_size=500, font_size=10, font_weight='bold', arrows=True, 
             arrowsize=15, edge_color='gray')
@@ -152,8 +152,8 @@ for alg in algebras:
     pos2 = hasse_layout(join_graph)
     # Make normal nodes lightblue and join irreducible darkred
     node_colors = ['lightblue'] * len(join_graph.nodes())
-    # for node in join_irreducibles_list:
-    #     node_colors[node] = 'darkred'
+    for node in join_irreducibles_list:
+        node_colors[node] = 'lightgreen'
     nx.draw(join_graph, pos2, ax=ax2, with_labels=True, node_color=node_colors,
             node_size=500, font_size=10, font_weight='bold', arrows=True, 
             arrowsize=15, edge_color='gray')
