@@ -1,0 +1,84 @@
+
+def to_p9m4(axioms,goals=""):
+    return f"""formulas(assumptions).
+{axioms}
+end_of_list.
+
+formulas(goals).
+{goals}
+end_of_list.
+"""
+
+# axioms
+
+lattice_axioms = """
+x^x=x.
+x^y=y^x.
+x^(y^z)=(x^y)^z.
+x v x=x.
+x v y=y v x.
+x v (y v z)=(x v y) v z.
+x ^ (x v y) = x.
+x v (x ^ y) = x.
+
+%leq
+(x<=y)<->(x v y=y).
+"""
+
+po_axioms = """
+x<=x.
+(x<=y & y<=z) -> x<=z.
+(x<=y & y<=x) -> x=y.
+"""
+
+commutative_monoid_axioms = """
+x*(y*z)=(x*y)*z.
+x*y = y*x.
+e*x=x.
+"""
+
+commutative_po_monoid_axioms = po_axioms + commutative_monoid_axioms + """
+x<=y -> z*x <= z*y.
+"""
+
+crp_axioms = commutative_po_monoid_axioms + """
+(x*y<=z)<->(y<=x\z).
+"""
+
+icrp_axioms = crp_axioms + """
+x=x*x.
+"""
+
+rsi_crp_axioms = crp_axioms + """
+exists x (-(e <= x) & all y (e<=y | y<=x)).
+"""
+
+rsi_icrp_axioms = icrp_axioms + """
+exists x (-(e <= x) & all y (e<=y | y<=x)).
+"""
+
+crl_axioms = lattice_axioms + commutative_monoid_axioms + """
+x*y = y*x.
+e*x=x.
+x*(y*z)=(x*y)*z.
+x<=y\(y*x).
+x*(x\y) <= y.
+x*(y^z)<= (x*y)^(x*z).
+(x\y)^(x\z) = x\(y^z).
+"""
+
+idcrl_axioms = crl_axioms + """
+x=x*x.
+x^(y v z)=(x^y)v(x^z).
+"""
+
+si_idcrl_axioms = idcrl_axioms + """
+exists x all y (x<=e & x!=e & (y<=e -> (y=e | y<=x))).
+"""
+
+simple_idcrl_axioms = idcrl_axioms + """
+(x<=e & x != e)->(x<= y).
+"""
+
+if __name__=="__main__":
+    print(to_p9m4(rsi_icrp_axioms))

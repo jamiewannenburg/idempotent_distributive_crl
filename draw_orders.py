@@ -1,16 +1,17 @@
 import uacalc_lib
 import matplotlib.pyplot as plt
 import matplotlib.backends.backend_pdf
+import matplotlib.colors as mcolors
+import colorsys
 import networkx as nx
 
 Mace4Reader = uacalc_lib.io.Mace4Reader
 OrderedSet = uacalc_lib.lat.OrderedSet
-algebras = list(Mace4Reader.parse_algebra_list_from_file("idempotent_distributive_crl.model"))
+BasicAlgebra = uacalc_lib.alg.BasicAlgebra
 
-# Create PDF file
-pdf_filename = "algebra_orders.pdf"
-pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_filename)
+from typing import Iterable
 
+from icrp import to_ordered_set as icrp_to_ordered_set
 
 # Helper function to compute levels for Hasse diagram layout
 def compute_levels(G):
@@ -108,7 +109,25 @@ def get_join_irreducibles_po(join_lattice):
     jis_po = OrderedSet(join_irreducibles, upper_covers_list, name="JoinIrreducibles")
     return jis_po, join_irreducibles
     
-for alg in algebras:
+def draw_poset(ax, poset: OrderedSet, title: str = "", node_colors: list[str] = [], highlight_nodes: list = []):
+    graph = poset.to_networkx()
+    if len(node_colors) == 0:
+        node_colors_copy = ['lightblue'] * len(graph.nodes())
+    else:
+        node_colors_copy = node_colors.copy()
+    node_rgb = [mcolors.to_rgb(color) for color in node_colors]
+    node_hls = [colorsys.rgb_to_hls(*c) for c in node_rgb]
+    for node in highlight_nodes:
+        c = node_hls[node]
+        node_colors_copy[node] = mcolors.to_hex(colorsys.hls_to_rgb(c[0], c[1]*0.7, c[2])) # darken the color
+    nx.draw(graph, pos=hasse_layout(graph), ax=ax, with_labels=True, node_color=node_colors_copy,
+            node_size=500, font_size=10, font_weight='bold', arrows=True, 
+            arrowsize=15, edge_color='gray')
+    ax.set_title(title, fontsize=10)
+    ax.axis('off')
+    return ax
+
+def draw_idempotent_crl(alg: BasicAlgebra, n: int = 0):
     join_op = None
     dot_op = None
     for op in alg.operations():
@@ -116,7 +135,13 @@ for alg in algebras:
             join_op = op
         if op.symbol().name() == "*":
             dot_op = op
-
+    universe = alg.get_universe_list()
+    card = len(universe)
+    colors = []
+    for i in range(n):
+        colors.append('orange')
+    for i in range(card-n):
+        colors.append('lightblue')
     # View dot as meet for fusion order
     dot_lattice = uacalc_lib.lat.lattice_from_meet("FusionSemiLattice", dot_op)
     dot_poset = OrderedSet.from_lattice(dot_lattice, name="FusionSemiLatticePoset")
@@ -124,7 +149,8 @@ for alg in algebras:
 
     # Get lattice
     join_lattice = uacalc_lib.lat.lattice_from_join("JoinLattice", join_op)
-    join_graph = join_lattice.to_networkx()
+    join_poset = OrderedSet.from_lattice(join_lattice, name="JoinLatticePoset")
+    join_graph = join_poset.to_networkx()
 
     # Get join irreducibles as a partial order and graph
     # ji_poset, original_join_irreducibles = get_join_irreducibles_po(join_lattice)
@@ -137,28 +163,10 @@ for alg in algebras:
     fig.suptitle(alg.name(), fontsize=14, fontweight='bold')
     
     # Draw dot graph (Fusion SemiLattice) using Hasse diagram layout
-    pos1 = hasse_layout(dot_graph)
-    # Make normal nodes lightblue and join irreducible darkred
-    node_colors = ['lightblue'] * len(dot_graph.nodes())
-    for node in join_irreducibles_list:
-        node_colors[node] = 'lightgreen'
-    nx.draw(dot_graph, pos1, ax=ax1, with_labels=True, node_color=node_colors,
-            node_size=500, font_size=10, font_weight='bold', arrows=True, 
-            arrowsize=15, edge_color='gray')
-    ax1.set_title("Fusion SemiLattice", fontsize=10)
-    ax1.axis('off')
+    ax1 = draw_poset(ax1, dot_poset, "Fusion SemiLattice", node_colors=colors, highlight_nodes=join_irreducibles_list)
     
     # Draw join graph (Join Lattice) using Hasse diagram layout
-    pos2 = hasse_layout(join_graph)
-    # Make normal nodes lightblue and join irreducible darkred
-    node_colors = ['lightblue'] * len(join_graph.nodes())
-    for node in join_irreducibles_list:
-        node_colors[node] = 'lightgreen'
-    nx.draw(join_graph, pos2, ax=ax2, with_labels=True, node_color=node_colors,
-            node_size=500, font_size=10, font_weight='bold', arrows=True, 
-            arrowsize=15, edge_color='gray')
-    ax2.set_title("Lattice", fontsize=10)
-    ax2.axis('off')
+    ax2 = draw_poset(ax2, join_poset, "Join Lattice", node_colors=colors, highlight_nodes=join_irreducibles_list)
 
     # # Draw join graph (Join Irreducibles) using Hasse diagram layout
     # pos3 = hasse_layout(ji_graph)
@@ -169,9 +177,59 @@ for alg in algebras:
     # ax3.axis('off')
     
     plt.tight_layout()
-    pdf.savefig(fig, bbox_inches='tight')
-    plt.close(fig)
+    return fig
 
-pdf.close()
-print(f"PDF saved to {pdf_filename}")
+def idempotent_crls_pdf(algebras: Iterable[BasicAlgebra], pdf_filename: str):
+    pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_filename)
+    for alg in algebras:
+        fig = draw_idempotent_crl(alg)
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
+    pdf.close()
+
+def draw_icrp(alg: BasicAlgebra):
+    dot_op = None
+    for op in alg.operations():
+        if op.symbol().name() == "*":
+            dot_op = op
+
+    # View dot as meet for fusion order
+    dot_lattice = uacalc_lib.lat.lattice_from_meet("FusionSemiLattice", dot_op)
+    dot_poset = OrderedSet.from_lattice(dot_lattice, name="FusionSemiLatticePoset")
+
+    # Get order
+    poset = icrp_to_ordered_set(alg)
+
+    # Create figure with two subplots side by side
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    fig.suptitle(alg.name(), fontsize=14, fontweight='bold')
+    node_colors = ['orange'] * len(alg.get_universe_list())
+    # Draw dot graph (Fusion SemiLattice) using Hasse diagram layout
+    ax1 = draw_poset(ax1, dot_poset, "Fusion SemiLattice", node_colors=node_colors)
+    
+    # Draw poset using Hasse diagram layout
+    ax2 = draw_poset(ax2, poset, "Poset", node_colors=node_colors)
+
+    plt.tight_layout()
+    return fig
+
+def icrps_pdf(algebras: Iterable[BasicAlgebra], pdf_filename: str):
+    pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_filename)
+    for alg in algebras:
+        fig = draw_icrp(alg)
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
+    pdf.close()
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input", type=str, default="simple_idempotent_distributive_crl.model")
+    parser.add_argument("-o", "--output", type=str, default="simple_idempotent_distributive_crl.pdf")
+    args = parser.parse_args()
+    model_filename = args.input
+    pdf_filename = args.output
+    algebras = Mace4Reader.parse_algebra_list_from_file(model_filename)
+    idempotent_crls_pdf(algebras, pdf_filename)
+    print(f"PDF saved to {pdf_filename}")
     

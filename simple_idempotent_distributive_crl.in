@@ -10,18 +10,7 @@ if(Mace4).   % Options for Mace4
   assign(end_size, 8).
   assign(max_seconds, -1).
   assign(max_megs, 400).
-end_if.
-
-if(Prover9). % Additional input for Prover9
-assign(max_seconds, -1).
-end_if.
-
-if(Mace4).   % Additional input for Mace4
-assign(max_seconds, -1).
-
-   % Additional input for Mace4
-assign(max_models, -1).
-  assign(max_seconds, -1).
+  assign(max_models, -1).
 end_if.
 
 formulas(assumptions).
@@ -35,9 +24,6 @@ x v y=y v x.
 x v (y v z)=(x v y) v z.
 x ^ (x v y) = x.
 x v (x ^ y) = x.
-
-%distributive
-x^(y v z) = (x^y)v(x^z).
 
 %leq
 (x<=y)<->(x v y=y).

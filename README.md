@@ -19,20 +19,16 @@ Install dependencies:
 
 ```bash
 # Install uacalc directly from git repository (latest version)
-pip install git+https://github.com/jamiewannenburg/uacalcsrc.git
-pip install networkx
-pip install uacalc[drawing]
+pip install "uacalc[drawing] @ git+https://github.com/jamiewannenburg/uacalcsrc.git"
 pip install matplotlib
+pip install "pyp9m4 @ git+https://github.com/jamiewannenburg/pyp9m4.git"
 ```
 
-Alternatively, you can install from a GitHub Release wheel file. Copy the link to the latest release for your platform and python version from [uacalc GitHub Releases](https://github.com/jamiewannenburg/uacalcsrc/releases) and install it:
+Alternatively, you can install uacalc from a GitHub Release wheel file, with rust compiled. Copy the link to the latest release for your platform and python version from [uacalc GitHub Releases](https://github.com/jamiewannenburg/uacalcsrc/releases) and install it:
 
 ```bash
 # Install from GitHub Release (replace version and wheel filename with latest)
-pip install https://github.com/jamiewannenburg/uacalcsrc/releases/download/v0.0.4/uacalc-0.0.4-cp310-cp310-win_amd64.whl
-pip install networkx
-pip install uacalc[drawing]
-pip install matplotlib
+pip install "uacalc[drawing] @ https://github.com/jamiewannenburg/uacalcsrc/releases/download/v0.0.7/uacalc-0.0.7-cp310-cp310-win_amd64.whl"
 ```
 
 Open `idempotent_distributive_crl.in` with Prover9/mace4 and run mace4.

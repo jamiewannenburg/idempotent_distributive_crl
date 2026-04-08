@@ -1,0 +1,21 @@
+interpretation( 3, [number = 1,seconds = 0], [
+    function(*(_,_), [
+        0,1,2,
+        1,1,1,
+        2,1,2]),
+    function(\(_,_), [
+        0,1,2,
+        0,0,0,
+        0,1,0]),
+    function(e, [0])]).
+interpretation( 3, [number = 6,seconds = 0], [
+    function(*(_,_), [
+        0,1,2,
+        1,1,2,
+        2,2,2]),
+    function(\(_,_), [
+        0,1,2,
+        2,1,2,
+        1,1,1]),
+    function(e, [0])]).
+% isofilter: input=60, kept=2, checks=58, perms=76, 0.07 seconds.
