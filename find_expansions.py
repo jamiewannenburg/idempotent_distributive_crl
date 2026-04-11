@@ -11,6 +11,12 @@ import itertools
 import uacalc_lib
 Mace4Reader = uacalc_lib.io.Mace4Reader
 
+def _terminal_status(msg: str, *, stream=None) -> None:
+    """Print msg on one terminal line, replacing the previous status line."""
+    stream = stream or sys.stdout
+    stream.write("\r" + msg + "\033[K")
+    stream.flush()
+
 def diagram(model: Mace4Interpretation):
     diagram_sentence = ""
     card = model.domain_size
@@ -61,18 +67,27 @@ def main(n):
     filename = f"rsi_icrp-{n}.model"
     buffer = Mace4InterpretationBuffer()
     result = {}
+    print(f"Reading models from {filename!r}...", flush=True)
     with open(filename) as f:
-        # read the file line by line and add to the buffer
         for line in f:
             for icrp in buffer.feed(line):
                 icrp = icrp[0]
                 name = re.search(r"number = (\d+)",icrp.raw).group(1)
+                max_dom = 2**n + 2
+                _terminal_status(
+                    f"model {name}: searching idempotent CRL expansions (domain up to {max_dom})..."
+                )
                 diagram_sentence = diagram(icrp)
-                for idcrl in m4.models(to_p9m4(idcrl_axioms+diagram_sentence),domain_size=n,end_size=2**n+2):
+                for idcrl in m4.models(to_p9m4(idcrl_axioms+diagram_sentence),domain_size=n,end_size=max_dom):
                     reader = Mace4Reader.new_from_stream(list(idcrl.raw.encode('utf-8')))
                     alg = reader.parse_algebra_from_stream(list(idcrl.raw.encode('utf-8')))
                     alg.set_name(f"model{name} expansion")
                     result[name] = alg
+                    _terminal_status(
+                        f"model {name}: expansion found ({len(result)} total so far)"
+                    )
+    sys.stdout.write("\n")
+    print(f"Finished expansion search: {len(result)} algebra(s).", flush=True)
     return result
 
 if __name__ == "__main__":
@@ -82,18 +97,26 @@ if __name__ == "__main__":
     from draw_orders import draw_idempotent_crl
     parser = argparse.ArgumentParser()
     parser.add_argument("n", type=int)
-    parser.add_argument("-i", "--ignore", action="store_true", description="ignore icrls that are already distributive")
+    parser.add_argument("-i", "--ignore-distributive", action="store_true")
     args = parser.parse_args()
     n = args.n
     result = main(n)
     filename = f"rsi_icrp-{n}_expansions.pdf"
-    if args.ignore:
+    if args.ignore_distributive:
         filename = f"rsi_icrp-{n}_proper_expansions.pdf"
     pdf = matplotlib.backends.backend_pdf.PdfPages(filename = filename)
-    for model, idcrl in result.items():
-        if args.ignore and len(idcrl.get_universe_list()) != n:
+    total = len(result)
+    pages = 0
+    for i, (model, idcrl) in enumerate(result.items(), start=1):
+        if not args.ignore_distributive or len(idcrl.get_universe_list()) == n:
+            _terminal_status(f"PDF {i}/{total}: drawing model {model}...")
             fig = draw_idempotent_crl(idcrl,n=n)
             pdf.savefig(fig, bbox_inches='tight')
             plt.close(fig)
+            pages += 1
+    sys.stdout.write("\n")
     pdf.close()
+    if args.ignore_distributive:
+        print(f"Wrote {pages} page(s) to {filename!r}.", flush=True)
+    
     print(len(result), "expansions found")

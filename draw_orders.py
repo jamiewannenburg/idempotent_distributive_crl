@@ -55,34 +55,123 @@ def compute_levels(G):
     
     return levels
 
+
+def _node_sort_key(n):
+    return (str(n), n)
+
+
+def _crossings_between_layers(G, levels, order_lo, order_hi, lo, hi):
+    """Count edge crossings between nodes on level lo and level hi (hi == lo + 1)."""
+    idx_lo = {n: i for i, n in enumerate(order_lo)}
+    idx_hi = {n: i for i, n in enumerate(order_hi)}
+    edge_pairs = []
+    for u, v in G.edges():
+        if levels.get(u) == lo and levels.get(v) == hi:
+            if u in idx_lo and v in idx_hi:
+                edge_pairs.append((idx_lo[u], idx_hi[v]))
+    c = 0
+    for i in range(len(edge_pairs)):
+        x1, y1 = edge_pairs[i]
+        for j in range(i + 1, len(edge_pairs)):
+            x2, y2 = edge_pairs[j]
+            if x1 == x2 or y1 == y2:
+                continue
+            if (x1 < x2) != (y1 < y2):
+                c += 1
+    return c
+
+
+def _total_adjacent_crossings(G, levels, order_by_level, max_level):
+    t = 0
+    for lev in range(max_level):
+        t += _crossings_between_layers(
+            G, levels, order_by_level[lev], order_by_level[lev + 1], lev, lev + 1
+        )
+    return t
+
+
+def _barycenter_refine_orders(G, levels, level_groups, max_level, iterations=24):
+    """
+    Order nodes within each level to reduce crossings (barycenter heuristic),
+    trying natural and reversed initial orders and keeping the better result.
+    """
+    if max_level <= 0:
+        return {
+            0: sorted(level_groups.get(0, []), key=_node_sort_key),
+        }
+
+    best_order = None
+    best_crossings = None
+
+    for reverse_initial in (False, True):
+        order = {}
+        for lev in range(max_level + 1):
+            nodes = sorted(level_groups.get(lev, []), key=_node_sort_key)
+            if reverse_initial:
+                nodes = list(reversed(nodes))
+            order[lev] = nodes
+
+        for _ in range(iterations):
+            for lev in range(1, max_level + 1):
+                prev_idx = {n: i for i, n in enumerate(order[lev - 1])}
+                cur_idx = {n: i for i, n in enumerate(order[lev])}
+
+                def key_down(v, lev=lev, prev_idx=prev_idx, cur_idx=cur_idx):
+                    preds = [u for u in G.predecessors(v) if levels.get(u) == lev - 1]
+                    if preds:
+                        b = sum(prev_idx[u] for u in preds) / len(preds)
+                    else:
+                        b = cur_idx[v]
+                    return (b, *_node_sort_key(v))
+
+                order[lev].sort(key=key_down)
+
+            for lev in range(max_level - 1, -1, -1):
+                next_idx = {n: i for i, n in enumerate(order[lev + 1])}
+                cur_idx = {n: i for i, n in enumerate(order[lev])}
+
+                def key_up(v, lev=lev, next_idx=next_idx, cur_idx=cur_idx):
+                    succs = [w for w in G.successors(v) if levels.get(w) == lev + 1]
+                    if succs:
+                        b = sum(next_idx[w] for w in succs) / len(succs)
+                    else:
+                        b = cur_idx[v]
+                    return (b, *_node_sort_key(v))
+
+                order[lev].sort(key=key_up)
+
+        crossings = _total_adjacent_crossings(G, levels, order, max_level)
+        if best_crossings is None or crossings < best_crossings:
+            best_crossings = crossings
+            best_order = {lev: list(nodes) for lev, nodes in order.items()}
+
+    return best_order
+
+
 # Helper function to create hierarchical layout for Hasse diagram
 def hasse_layout(G):
-    """Create a hierarchical layout suitable for Hasse diagrams."""
+    """Create a hierarchical layout suitable for Hasse diagrams (crossing reduction)."""
     levels = compute_levels(G)
     if not levels:
         return nx.spring_layout(G)
-    
-    # Group nodes by level
+
     level_groups = {}
     for node, level in levels.items():
-        if level not in level_groups:
-            level_groups[level] = []
-        level_groups[level].append(node)
-    
-    pos = {}
+        level_groups.setdefault(level, []).append(node)
+
     max_level = max(levels.values())
-    
-    # Position nodes: y-coordinate based on level, x-coordinate evenly spaced within level
+    order_by_level = _barycenter_refine_orders(G, levels, level_groups, max_level)
+
+    pos = {}
     for level in range(max_level + 1):
-        nodes_at_level = level_groups.get(level, [])
+        nodes_at_level = order_by_level.get(level, [])
         num_nodes = len(nodes_at_level)
         if num_nodes > 0:
-            # Evenly space nodes horizontally
             for i, node in enumerate(nodes_at_level):
                 x = (i - (num_nodes - 1) / 2) / max(num_nodes, 1) * 2
                 y = level
                 pos[node] = (x, y)
-    
+
     return pos
 
 def get_join_irreducibles_po(join_lattice):
