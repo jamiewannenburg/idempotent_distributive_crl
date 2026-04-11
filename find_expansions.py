@@ -108,7 +108,7 @@ if __name__ == "__main__":
     total = len(result)
     pages = 0
     for i, (model, idcrl) in enumerate(result.items(), start=1):
-        if not args.ignore_distributive or len(idcrl.get_universe_list()) == n:
+        if not args.ignore_distributive or len(idcrl.get_universe_list()) != n:
             _terminal_status(f"PDF {i}/{total}: drawing model {model}...")
             fig = draw_idempotent_crl(idcrl,n=n)
             pdf.savefig(fig, bbox_inches='tight')
