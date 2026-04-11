@@ -15,14 +15,18 @@ OrderedSet = ua.lat.OrderedSet
 #     arrow_op = TermOperationImp(arrow_mod_term, [x, y], alg, name="arrowmod")
 #     return arrow_op
 
-#TODO: this is broken somehow
-def leq(x,y,arrow_op: BasicOperation,universe):
+def leq(x, y, arrow_op: BasicOperation, universe):
+    """Carrier order: x <= y iff (x->y) = (x->y)->(x->y) (idempotent residual).
+
+    BasicOperation.int_value_at (and value_at) take *indices* 0..n-1 into the carrier
+    and return the result as another such index (the row-major table value), not as a
+    universe label. Do not pass universe values into int_value_at or wrap its result
+    with universe.index.
+    """
     i = universe.index(x)
     j = universe.index(y)
-    # return arrow_op.int_value_at([x,y]) == arrow_mod_op.int_value_at([x,y])
-    arrow = arrow_op.int_value_at([i,j])
-    k = universe.index(arrow)
-    return arrow == arrow_op.int_value_at([k,k])
+    k = arrow_op.int_value_at([i, j])
+    return k == arrow_op.int_value_at([k, k])
 
 def get_filters(alg: BasicAlgebra):
     universe = alg.get_universe_list()
@@ -63,5 +67,6 @@ if __name__ == "__main__":
     else:
         pdf_filename = Path(pdf_filename)
     algebras = Mace4Reader.parse_algebra_list_from_file(str(model_filename))
+
     icrps_pdf(algebras, str(pdf_filename))
     print(f"PDF saved to {pdf_filename}")
