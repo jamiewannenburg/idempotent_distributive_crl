@@ -4,6 +4,9 @@ import matplotlib.backends.backend_pdf
 import matplotlib.colors as mcolors
 import colorsys
 import networkx as nx
+from pyp9m4 import Model
+import re
+import sys
 
 Mace4Reader = uacalc_lib.io.Mace4Reader
 OrderedSet = uacalc_lib.lat.OrderedSet
@@ -11,7 +14,7 @@ BasicAlgebra = uacalc_lib.alg.BasicAlgebra
 
 from typing import Iterable
 
-from icrp import to_ordered_set as icrp_to_ordered_set
+from icrp import get_graphs as icrp_to_graphs
 
 # Helper function to compute levels for Hasse diagram layout
 def compute_levels(G):
@@ -198,8 +201,7 @@ def get_join_irreducibles_po(join_lattice):
     jis_po = OrderedSet(join_irreducibles, upper_covers_list, name="JoinIrreducibles")
     return jis_po, join_irreducibles
     
-def draw_poset(ax, poset: OrderedSet, title: str = "", node_colors: list[str] = [], highlight_nodes: list = []):
-    graph = poset.to_networkx()
+def draw_graph(ax, graph: nx.DiGraph, title: str = "", node_colors: list[str] = [], highlight_nodes: list = []):
     if len(node_colors) == 0:
         node_colors_copy = ['lightblue'] * len(graph.nodes())
     else:
@@ -215,6 +217,10 @@ def draw_poset(ax, poset: OrderedSet, title: str = "", node_colors: list[str] = 
     ax.set_title(title, fontsize=10)
     ax.axis('off')
     return ax
+
+def draw_poset(ax, poset: OrderedSet, title: str = "", node_colors: list[str] = [], highlight_nodes: list = []):
+    graph = poset.to_networkx()
+    return draw_graph(ax, graph, title, node_colors, highlight_nodes)
 
 def draw_idempotent_crl(alg: BasicAlgebra, n: int = 0):
     join_op = None
@@ -276,38 +282,41 @@ def idempotent_crls_pdf(algebras: Iterable[BasicAlgebra], pdf_filename: str):
         plt.close(fig)
     pdf.close()
 
-def draw_icrp(alg: BasicAlgebra):
-    dot_op = None
-    for op in alg.operations():
-        if op.symbol().name() == "*":
-            dot_op = op
-
-    # View dot as meet for fusion order
-    dot_lattice = uacalc_lib.lat.lattice_from_meet("FusionSemiLattice", dot_op)
-    dot_poset = OrderedSet.from_lattice(dot_lattice, name="FusionSemiLatticePoset")
-
-    # Get order
-    poset = icrp_to_ordered_set(alg)
-
+def draw_icrp(model: Model):
+    # Get graphs
+    leq_graph, fusion_leq_graph = icrp_to_graphs(model)
+    name = re.search(r"number = (\d+)",model.raw).group(1)
     # Create figure with two subplots side by side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
-    fig.suptitle(alg.name(), fontsize=14, fontweight='bold')
-    node_colors = ['orange'] * len(alg.get_universe_list())
+    fig.suptitle(f"model{name}", fontsize=14, fontweight='bold')
+    node_colors = ['orange'] * model.domain_size
     # Draw dot graph (Fusion SemiLattice) using Hasse diagram layout
-    ax1 = draw_poset(ax1, dot_poset, "Fusion SemiLattice", node_colors=node_colors)
+    ax1 = draw_graph(ax1, fusion_leq_graph, "Fusion SemiLattice", node_colors=node_colors)
     
     # Draw poset using Hasse diagram layout
-    ax2 = draw_poset(ax2, poset, "Poset", node_colors=node_colors)
+    ax2 = draw_graph(ax2, leq_graph, "Poset", node_colors=node_colors)
 
     plt.tight_layout()
     return fig
 
-def icrps_pdf(algebras: Iterable[BasicAlgebra], pdf_filename: str):
+
+def _terminal_status(msg: str, *, stream=None) -> None:
+    """Print msg on one terminal line, replacing the previous status line."""
+    stream = stream or sys.stdout
+    stream.write("\r" + msg + "\033[K")
+    stream.flush()
+
+
+def icrps_pdf(models: Iterable[Model], pdf_filename: str):
     pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_filename)
-    for alg in algebras:
-        fig = draw_icrp(alg)
+    
+    for i, model in enumerate(models):
+        name = re.search(r"number = (\d+)",model.raw).group(1)
+        _terminal_status(f"PDF page {i+1}: drawing model {name}...")
+        fig = draw_icrp(model)
         pdf.savefig(fig, bbox_inches='tight')
         plt.close(fig)
+    print()
     pdf.close()
 
 if __name__ == "__main__":
