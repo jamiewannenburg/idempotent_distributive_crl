@@ -1,4 +1,3 @@
-
 def to_p9m4(axioms,goals=""):
     return f"""formulas(assumptions).
 {axioms}
@@ -20,8 +19,6 @@ x v y=y v x.
 x v (y v z)=(x v y) v z.
 x ^ (x v y) = x.
 x v (x ^ y) = x.
-
-%leq
 (x<=y)<->(x v y=y).
 """
 

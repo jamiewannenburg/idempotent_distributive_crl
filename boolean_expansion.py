@@ -1,9 +1,8 @@
-from pyp9m4 import Model,parse_mace4_output
+from pyp9m4 import Model,parse_models_from_file
 from axioms import to_p9m4, idcrl_axioms
 import re
-from pyp9m4.parsers.mace4 import Mace4InterpretationBuffer
 import itertools
-from icrp import get_leq_from_fusion, get_le
+from icrp import get_fusion_leq, get_le
 import numpy as np
 from find_expansions import diagram
 
@@ -102,23 +101,20 @@ embedding += f"    function(\\(_,_), [{op_to_string(arrow)}]),\n"
 embedding += f"    relation(<=(_,_), [{matrix_to_string(leq)}]),\n"
 embedding += f"    function(e, [0])]).\n"
 print(embedding)
-with open("rsi_icrp-7-861-expansion.model", "w") as f:
+with open("model_outputs/rsi_icrp-7-861-expansion.model", "w") as f:
     f.write(embedding)
 
-with open("rsi_icrp-7-861.model") as f:
-    buffer = Mace4InterpretationBuffer()
-    for line in f:
-        for model in buffer.feed(line):
-            model = model[0]
-            name = re.search(r"number = (\d+)",model.raw).group(1)
-            print(name)
-            diagram_sentence = diagram(model)
-            for i in range(7):
-                assert dot(i,i) == i, f"dot({i},{i}) = {dot(i,i)} != {i}"
-                for j in range(7):
-                    icrp_arrow = model.as_function("\\")
-                    icrp_dot = model.as_function("*")
-                    assert icrp_dot(i,j) == dot(i,j), f"dot({i},{j}) = {icrp_dot(i,j)} != {dot(i,j)}"
-                    assert icrp_arrow(i,j) == arrow(i,j), f"arrow({i},{j}) = {icrp_arrow(i,j)} != {arrow(i,j)}"
-                    assert dot(i,j) == dot(j,i), f"dot({i},{j}) = {dot(i,j)} != {dot(j,i)}"
+with open("model_outputs/rsi_icrp-7-861.model") as f:
+    for model in parse_models_from_file(f):
+        name = re.search(r"number = (\d+)",model.raw).group(1)
+        print(name)
+        diagram_sentence = diagram(model)
+        for i in range(7):
+            assert dot(i,i) == i, f"dot({i},{i}) = {dot(i,i)} != {i}"
+            for j in range(7):
+                icrp_arrow = model.as_function("\\")
+                icrp_dot = model.as_function("*")
+                assert icrp_dot(i,j) == dot(i,j), f"dot({i},{j}) = {icrp_dot(i,j)} != {dot(i,j)}"
+                assert icrp_arrow(i,j) == arrow(i,j), f"arrow({i},{j}) = {icrp_arrow(i,j)} != {arrow(i,j)}"
+                assert dot(i,j) == dot(j,i), f"dot({i},{j}) = {dot(i,j)} != {dot(j,i)}"
 

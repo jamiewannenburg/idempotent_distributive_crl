@@ -5,12 +5,20 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python Debugger: Current File with Arguments",
+            "name": "Python Debugger: find_expansions.py with Arguments",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "program": "find_expansions.py",
             "console": "integratedTerminal",
             "args": ["3"]
+        },
+        {
+            "name": "Python Debugger: icrl.py with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "icrl.py",
+            "console": "integratedTerminal",
+            "args": ["-i", "model_outputs/rsi_icrp-7-861-expansion.model"]
         }
     ]
 }

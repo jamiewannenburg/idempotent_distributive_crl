@@ -18,21 +18,14 @@ source venv/bin/activate
 Install dependencies:
 
 ```bash
-# Install uacalc directly from git repository (latest version)
-pip install "uacalc[drawing] @ git+https://github.com/jamiewannenburg/uacalcsrc.git"
+# Install pyp9m4 directly from git repository (object oriented version)
 pip install matplotlib
-pip install "pyp9m4 @ git+https://github.com/jamiewannenburg/pyp9m4.git"
+pip install networkx
+pip install "pyp9m4 @ git+https://github.com/jamiewannenburg/pyp9m4.git@oo"
 ```
 
-Alternatively, you can install uacalc from a GitHub Release wheel file, with rust compiled. Copy the link to the latest release for your platform and python version from [uacalc GitHub Releases](https://github.com/jamiewannenburg/uacalcsrc/releases) and install it:
-
-```bash
-# Install from GitHub Release (replace version and wheel filename with latest)
-pip install "uacalc[drawing] @ https://github.com/jamiewannenburg/uacalcsrc/releases/download/v0.0.7/uacalc-0.0.7-cp310-cp310-win_amd64.whl"
-```
-
-Open `idempotent_distributive_crl.in` with Prover9/mace4 and run mace4.
-This generates simple IDCRLs with up to 7 elements. Filter out isomorphic copies. Save the result to `idempotent_distributive_crl.model`.
+Open `simple_idempotent_distributive_crl.in` with Prover9/mace4 and run mace4.
+This generates simple IDCRLs with up to 7 elements. Filter out isomorphic copies. Save the result to `simple_idempotent_distributive_crl.model`.
 
 Then run `python draw_orders.py`.
 

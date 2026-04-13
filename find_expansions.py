@@ -1,14 +1,11 @@
 # %%
 import os
 import sys
-import asyncio
-from pyp9m4 import Theory, Model, parse_models_from_file, parse_mace4_output
+from pyp9m4 import Theory, Model, parse_models_from_file
 from pyp9m4.options import Mace4CliOptions
-from axioms import to_p9m4, idcrl_axioms
+from axioms import idcrl_axioms
 import re
 import itertools
-import uacalc_lib
-Mace4Reader = uacalc_lib.io.Mace4Reader
 
 def _terminal_status(msg: str, *, stream=None) -> None:
     """Print msg on one terminal line, replacing the previous status line."""
@@ -57,24 +54,23 @@ options = Mace4CliOptions(
 
 # get relatively subdirectly irreducible idempotent commutative residuated pomonoids
 def main(n):
-    difficult_filename = f"difficult-{n}.txt"
+    difficult_filename = f"input/difficult-{n}.txt"
     if os.path.exists(difficult_filename):
         os.remove(difficult_filename)
-    filename = f"rsi_icrp-{n}.model"
+    filename = f"model_outputs/rsi_icrp-{n}.model"
     result = {}
     print(f"Reading models from {filename!r}...", flush=True)
     for icrp in parse_models_from_file(filename):
         name = re.search(r"number = (\d+)",icrp.raw).group(1)
         found = False
         if name == '861':
-            alg = Mace4Reader.parse_algebra_from_file('rsi_icrp-7-861-expansion.model')
-            alg.set_name(f"model{name} expansion")
-            result[name] = alg
-            found = True
-            _terminal_status(
-                f"model {name}: expansion found manually {len(result)} total so far)"
-            )
-            continue
+            for alg in parse_models_from_file('model_outputs/rsi_icrp-7-861-expansion.model'):
+                result[name] = alg
+                found = True
+                _terminal_status(
+                    f"model {name}: expansion found manually {len(result)} total so far)"
+                )
+                continue
         max_dom = 2**n + 2
         _terminal_status(
             f"model {name}: searching idempotent CRL expansions (domain up to {max_dom})..."
@@ -84,10 +80,7 @@ def main(n):
         
         for idcrl in idcrl_theory.mace4(options=options,domain_size=n,end_size=max_dom,timeout_s=60).models():
             found = True
-            reader = Mace4Reader.new_from_stream(list(idcrl.raw.encode('utf-8')))
-            alg = reader.parse_algebra_from_stream(list(idcrl.raw.encode('utf-8')))
-            alg.set_name(f"model{name} expansion")
-            result[name] = alg
+            result[name] = idcrl
             _terminal_status(
                 f"model {name}: expansion found ({len(result)} total so far)"
             )
@@ -109,14 +102,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     n = args.n
     result = main(n)
-    filename = f"rsi_icrp-{n}_expansions.pdf"
+    filename = f"output/rsi_icrp-{n}_expansions.pdf"
     if args.ignore_distributive:
-        filename = f"rsi_icrp-{n}_proper_expansions.pdf"
+        filename = f"output/rsi_icrp-{n}_proper_expansions.pdf"
     pdf = matplotlib.backends.backend_pdf.PdfPages(filename = filename)
     total = len(result)
     pages = 0
     for i, (model, idcrl) in enumerate(result.items(), start=1):
-        if not args.ignore_distributive or len(idcrl.get_universe_list()) != n:
+        if not args.ignore_distributive or idcrl.domain_size != n:
             _terminal_status(f"PDF {i}/{total}: drawing model {model}...")
             fig = draw_idempotent_crl(idcrl,n=n)
             pdf.savefig(fig, bbox_inches='tight')

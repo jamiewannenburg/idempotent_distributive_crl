@@ -1,20 +1,19 @@
 # %%
 import os
 import sys
-from pyp9m4 import Theory, IsomorphismFilter
-from pyp9m4.options import Mace4CliOptions, IsofilterCliOptions, InterpformatCliOptions
-from axioms import to_p9m4, rsi_icrp_axioms
+from pyp9m4 import Theory
+from axioms import rsi_icrp_axioms
 
 # get relatively subdirectly irreducible idempotent commutative residuated pomonoids
 def main(n):
     # clear file if it exists
-    if os.path.exists(f"rsi_icrp-{n}.model"):
-        os.remove(f"rsi_icrp-{n}.model")
+    if os.path.exists(f"model_outputs/rsi_icrp-{n}.model"):
+        os.remove(f"model_outputs/rsi_icrp-{n}.model")
     result = (
         Theory(assumptions=rsi_icrp_axioms)
         .mace4(domain_size=n,max_models=-1,max_seconds=-1)
         .interpformat(output_operations="* \\ e")
-        .isofilter(output_file=f"rsi_icrp-{n}.model")
+        .isofilter(output_file=f"model_outputs/rsi_icrp-{n}.model")
         .stream()
     )
     return result
