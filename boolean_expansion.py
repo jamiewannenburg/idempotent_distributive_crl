@@ -2,7 +2,7 @@ from pyp9m4 import Model,parse_models_from_file
 from axioms import to_p9m4, idcrl_axioms
 import re
 import itertools
-from icrp import get_fusion_leq, get_le
+from icrl import to_interpretation_text, get_leq_from_meet_operation
 import numpy as np
 from find_expansions import diagram
 
@@ -27,6 +27,8 @@ for i,a in enumerate(ba_universe):
         crp_to_ba[i+2] = a
 ba_to_crp = {v: k for k, v in crp_to_ba.items()}
 extension_universe = list(range(len(crp_to_ba)))
+extension_cardinality = len(extension_universe)
+
 def meet(x,y):
     if x == 1:
         return 1
@@ -50,13 +52,7 @@ def dot(x,y):
     else:
         return ba_to_crp[ba_meet(crp_to_ba[x], crp_to_ba[y])]
 
-leq = np.zeros((len(crp_to_ba), len(crp_to_ba)),dtype=bool)
-for i in range(len(crp_to_ba)):
-    for j in range(len(crp_to_ba)):
-        if i == meet(i, j):
-            leq[i, j] = True
-        else:
-            leq[i, j] = False
+leq = get_leq_from_meet_operation(meet, extension_cardinality)
 
 def arrow(x,y):
     # largest element whose dot with x is less than or equal to y
@@ -74,32 +70,8 @@ def arrow(x,y):
                 assert leq[dot(best, x), y], f"join of two elements that are not less than or equal to y: {best}, {i}, {x}, {y}"
     return best
 
-def matrix_to_string(matrix):
-    table = []
-    for i,j in itertools.product(range(len(crp_to_ba)), repeat=2):
-        if i!=0 and j == 0:
-            table.append('\n                       '+str(int(matrix[i,j])))
-        else:
-            table.append(str(int(matrix[i,j])))
-    return ','.join(table)
+embedding = to_interpretation_text("861", extension_cardinality, dot, arrow, leq, 0)
 
-def op_to_string(op):
-    s = ""
-    table = []
-    for i,j in itertools.product(range(len(crp_to_ba)), repeat=2):
-        if i!=0 and j == 0:
-            table.append('\n                      '+str(int(op(i,j))))
-        else:
-            table.append(str(int(op(i,j))))
-    return ','.join(table)
-
-embedding = f"interpretation( {len(crp_to_ba)}, [number = 861, seconds = 0], [\n"
-embedding += f"    function(*(_,_), [{op_to_string(dot)}]),\n"
-embedding += f"    function(^(_,_), [{op_to_string(meet)}]),\n"
-embedding += f"    function(v(_,_), [{op_to_string(join)}]),\n"
-embedding += f"    function(\\(_,_), [{op_to_string(arrow)}]),\n"
-embedding += f"    relation(<=(_,_), [{matrix_to_string(leq)}]),\n"
-embedding += f"    function(e, [0])]).\n"
 print(embedding)
 with open("model_outputs/rsi_icrp-7-861-expansion.model", "w") as f:
     f.write(embedding)
