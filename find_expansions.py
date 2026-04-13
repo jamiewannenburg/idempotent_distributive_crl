@@ -2,9 +2,8 @@
 import os
 import sys
 import asyncio
-from pyp9m4 import Mace4, pipeline, parse_mace4_output
-from pyp9m4.parsers.mace4 import Mace4Interpretation, Mace4InterpretationBuffer
-from pyp9m4.options import Mace4CliOptions, IsofilterCliOptions, InterpformatCliOptions
+from pyp9m4 import Theory, Model, parse_models_from_file, parse_mace4_output
+from pyp9m4.options import Mace4CliOptions
 from axioms import to_p9m4, idcrl_axioms
 import re
 import itertools
@@ -17,14 +16,11 @@ def _terminal_status(msg: str, *, stream=None) -> None:
     stream.write("\r" + msg + "\033[K")
     stream.flush()
 
-def diagram(model: Mace4Interpretation):
+def diagram(model: Model):
     diagram_sentence = ""
     card = model.domain_size
     for symbol, n in model.functions.items():
-        match = re.search(r"(.+?)\(",symbol)
         symbol_only = symbol
-        if match:
-            symbol_only = match.group(1)
         if n == 0:
             diagram_sentence += f"{symbol_only}={model.get_value(symbol)}.\n"
         elif n == 1:
@@ -40,8 +36,6 @@ def diagram(model: Mace4Interpretation):
     
     for symbol, n in model.relations.items():
         symbol_only = symbol
-        if match:
-            symbol_only = match.group(1)
         if n == 0:
             neg = "-" if model.holds(symbol) else ""
             diagram_sentence += neg+f"{symbol_only}().\n"
@@ -55,7 +49,7 @@ def diagram(model: Mace4Interpretation):
 options = Mace4CliOptions(
     end_size=12,
     max_models=1,
-    max_seconds=60
+    max_seconds=60,
 )
 
 # def print_interpretation(interpretation,er):
@@ -63,29 +57,43 @@ options = Mace4CliOptions(
 
 # get relatively subdirectly irreducible idempotent commutative residuated pomonoids
 def main(n):
-    m4 = Mace4()
+    difficult_filename = f"difficult-{n}.txt"
+    if os.path.exists(difficult_filename):
+        os.remove(difficult_filename)
     filename = f"rsi_icrp-{n}.model"
-    buffer = Mace4InterpretationBuffer()
     result = {}
     print(f"Reading models from {filename!r}...", flush=True)
-    with open(filename) as f:
-        for line in f:
-            for icrp in buffer.feed(line):
-                icrp = icrp[0]
-                name = re.search(r"number = (\d+)",icrp.raw).group(1)
-                max_dom = 2**n + 2
-                _terminal_status(
-                    f"model {name}: searching idempotent CRL expansions (domain up to {max_dom})..."
-                )
-                diagram_sentence = diagram(icrp)
-                for idcrl in m4.models(to_p9m4(idcrl_axioms+diagram_sentence),domain_size=n,end_size=max_dom):
-                    reader = Mace4Reader.new_from_stream(list(idcrl.raw.encode('utf-8')))
-                    alg = reader.parse_algebra_from_stream(list(idcrl.raw.encode('utf-8')))
-                    alg.set_name(f"model{name} expansion")
-                    result[name] = alg
-                    _terminal_status(
-                        f"model {name}: expansion found ({len(result)} total so far)"
-                    )
+    for icrp in parse_models_from_file(filename):
+        name = re.search(r"number = (\d+)",icrp.raw).group(1)
+        found = False
+        if name == '861':
+            alg = Mace4Reader.parse_algebra_from_file('rsi_icrp-7-861-expansion.model')
+            alg.set_name(f"model{name} expansion")
+            result[name] = alg
+            found = True
+            _terminal_status(
+                f"model {name}: expansion found manually {len(result)} total so far)"
+            )
+            continue
+        max_dom = 2**n + 2
+        _terminal_status(
+            f"model {name}: searching idempotent CRL expansions (domain up to {max_dom})..."
+        )
+        diagram_sentence = diagram(icrp)
+        idcrl_theory = Theory(assumptions=idcrl_axioms+diagram_sentence)
+        
+        for idcrl in idcrl_theory.mace4(options=options,domain_size=n,end_size=max_dom,timeout_s=60).models():
+            found = True
+            reader = Mace4Reader.new_from_stream(list(idcrl.raw.encode('utf-8')))
+            alg = reader.parse_algebra_from_stream(list(idcrl.raw.encode('utf-8')))
+            alg.set_name(f"model{name} expansion")
+            result[name] = alg
+            _terminal_status(
+                f"model {name}: expansion found ({len(result)} total so far)"
+            )
+        if not found:
+            with open(difficult_filename, "a") as f:
+                f.write(f"{name}\n")
     sys.stdout.write("\n")
     print(f"Finished expansion search: {len(result)} algebra(s).", flush=True)
     return result

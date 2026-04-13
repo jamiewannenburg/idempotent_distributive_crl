@@ -58,9 +58,6 @@ exists x (-(e <= x) & all y (e<=y | y<=x)).
 """
 
 crl_axioms = lattice_axioms + commutative_monoid_axioms + """
-x*y = y*x.
-e*x=x.
-x*(y*z)=(x*y)*z.
 x<=y\(y*x).
 x*(x\y) <= y.
 x*(y^z)<= (x*y)^(x*z).
