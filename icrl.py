@@ -8,19 +8,19 @@ from axioms import idcrl_axioms
 import os
 import re
 import itertools
-from typing import Function
+from collections.abc import Callable
 
-def to_interpretation_text(number: str, cardinality: int, meet: Function, join: Function, dot: Function, arrow: Function, leq: np.ndarray, e: int):
+def to_interpretation_text(number: str, cardinality: int, meet: Callable, join: Callable, dot: Callable, arrow: Callable, leq: np.ndarray, e: int):
     embedding = f"interpretation( {cardinality}, [number = {number}, seconds = 0], [\n"
     embedding += f"    function(*(_,_), [{op_to_string(dot, cardinality)}]),\n"
     embedding += f"    function(^(_,_), [{op_to_string(meet, cardinality)}]),\n"
     embedding += f"    function(v(_,_), [{op_to_string(join, cardinality)}]),\n"
     embedding += f"    function(\\(_,_), [{op_to_string(arrow, cardinality)}]),\n"
     embedding += f"    relation(<=(_,_), [{matrix_to_string(leq, cardinality)}]),\n"
-    embedding += f"    function(e, [{e}]]).\n"
+    embedding += f"    function(e, [{e}])]).\n"
     return embedding
 
-def get_leq_from_meet_operation(meet: Function, cardinality: int):
+def get_leq_from_meet_operation(meet: Callable, cardinality: int):
     leq =np.zeros((cardinality, cardinality),dtype=bool)
     for i,j in itertools.product(range(cardinality), repeat=2):
         if i == meet(i, j):

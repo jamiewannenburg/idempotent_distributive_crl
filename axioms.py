@@ -54,6 +54,11 @@ rsi_icrp_axioms = icrp_axioms + """
 exists x (-(e <= x) & all y (e<=y | y<=x)).
 """
 
+rsi_conic_icrp_axioms = rsi_icrp_axioms + """
+#(x=x\\x)|( (x\\e) = (x\\e)\\(x\\e) ).
+x<=e | e<=x.
+"""
+
 crl_axioms = lattice_axioms + commutative_monoid_axioms + """
 x<=y\(y*x).
 x*(x\y) <= y.
@@ -70,8 +75,16 @@ si_idcrl_axioms = idcrl_axioms + """
 exists x all y (x<=e & x!=e & (y<=e -> (y=e | y<=x))).
 """
 
+si_conic_idcrl_axioms = si_idcrl_axioms + """
+x<=e | e<=x.
+"""
+
 simple_idcrl_axioms = idcrl_axioms + """
 (x<=e & x != e)->(x<= y).
+"""
+
+simple_conic_idcrl_axioms = simple_idcrl_axioms + """
+x<=e | e<=x.
 """
 
 if __name__=="__main__":

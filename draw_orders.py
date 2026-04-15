@@ -196,10 +196,11 @@ def draw_graph(ax, graph: nx.DiGraph, title: str = "", node_colors: list[str] = 
     ax.axis('off')
     return ax
 
-def draw_idempotent_crl(model: Model, n: int = 0):
+def draw_idempotent_crl(model: Model, name: str = "0", n: int = 0):
     universe = list(range(model.domain_size))
     card = model.domain_size
-    name = re.search(r"number = (\d+)",model.raw).group(1)
+    if name == "0":
+        name = re.search(r"number\s*=\s*(\d+)",model.raw).group(1)
     colors = []
     for i in range(n):
         colors.append('orange')
@@ -224,7 +225,7 @@ def draw_idempotent_crl(model: Model, n: int = 0):
 def idempotent_crls_pdf(models: Iterable[Model], pdf_filename: str):
     pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_filename)
     for i, model in enumerate(models):
-        name = re.search(r"number = (\d+)",model.raw).group(1)
+        name = re.search(r"number\s*=\s*(\d+)",model.raw).group(1)
         _terminal_status(f"PDF page {i+1}: drawing model {name}...")
         fig = draw_idempotent_crl(model)
         pdf.savefig(fig, bbox_inches='tight')
@@ -235,7 +236,7 @@ def idempotent_crls_pdf(models: Iterable[Model], pdf_filename: str):
 def draw_icrp(model: Model):
     # Get graphs
     leq_graph, fusion_leq_graph = icrp_to_graphs(model)
-    name = re.search(r"number = (\d+)",model.raw).group(1)
+    name = re.search(r"number\s*=\s*(\d+)",model.raw).group(1)
     # Create figure with two subplots side by side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
     fig.suptitle(f"model{name}", fontsize=14, fontweight='bold')
@@ -253,7 +254,7 @@ def icrps_pdf(models: Iterable[Model], pdf_filename: str):
     pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_filename)
     
     for i, model in enumerate(models):
-        name = re.search(r"number = (\d+)",model.raw).group(1)
+        name = re.search(r"number\s*=\s*(\d+)",model.raw).group(1)
         _terminal_status(f"PDF page {i+1}: drawing model {name}...")
         fig = draw_icrp(model)
         pdf.savefig(fig, bbox_inches='tight')

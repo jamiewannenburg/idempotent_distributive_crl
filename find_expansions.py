@@ -1,11 +1,14 @@
 # %%
 import os
 import sys
-from pyp9m4 import Theory, Model, parse_models_from_file
+from pyp9m4 import Theory, Model, InterpFilter, parse_models_from_file, parse_mace4_output
 from pyp9m4.options import Mace4CliOptions
 from axioms import idcrl_axioms
 import re
 import itertools
+import tempfile
+from icrp import leq_arrows
+from conic_icrp import get_extension_interpretation_text, is_conic
 
 def _terminal_status(msg: str, *, stream=None) -> None:
     """Print msg on one terminal line, replacing the previous status line."""
@@ -49,6 +52,31 @@ options = Mace4CliOptions(
     max_seconds=60,
 )
 
+
+
+def check_formulas(formulas: str, model: Model, print_output: bool = False):
+    temp_file = tempfile.NamedTemporaryFile(delete=False)
+    temp_file.write(formulas.encode('utf-8'))
+    temp_file.close()
+    result = InterpFilter().run(input=model.raw,formulas_file=temp_file.name,test='all_true')
+    os.unlink(temp_file.name)
+    m = re.search("checked 1, passed 1", result.stdout)
+    if m:
+        return True
+    else:
+        if print_output:
+            print(result.stdout)
+        return False
+
+seperable_conic = f"""
+({leq_arrows('e','x')})|({leq_arrows('x','e')}).
+({leq_arrows('x','e')})->({leq_arrows('(x*y)','y')}).
+
+"""
+
+def is_seperable_conic(model: Model, print_output: bool = False):
+    return check_formulas(seperable_conic, model, print_output)
+
 # def print_interpretation(interpretation,er):
 #     print(interpretation)
 
@@ -61,22 +89,31 @@ def main(n):
     result = {}
     print(f"Reading models from {filename!r}...", flush=True)
     for icrp in parse_models_from_file(filename):
-        name = re.search(r"number = (\d+)",icrp.raw).group(1)
+        name = re.search(r"number\s*=\s*(\d+)",icrp.raw).group(1)
+        diagram_sentence = diagram(icrp)
+        assumptions = idcrl_axioms+diagram_sentence
+        
+
         found = False
-        if name == '861':
-            for alg in parse_models_from_file('model_outputs/rsi_icrp-7-861-expansion.model'):
-                result[name] = alg
-                found = True
-                _terminal_status(
-                    f"model {name}: expansion found manually {len(result)} total so far)"
-                )
-                continue
+        if is_conic(icrp):
+            for alg in parse_mace4_output(get_extension_interpretation_text(name, icrp)).interpretations:
+                if check_formulas(assumptions, alg):
+                    result[name] = alg
+                    found = True
+                    _terminal_status(
+                        f"model {name}: expansion found manually {len(result)} total so far)"
+                    )
+                    continue
+                else:
+                    print()
+                    print(f"model {name}: is seperable but expansion does not work")
+                    print("Trying other methods...")
+
         max_dom = 2**n + 2
         _terminal_status(
             f"model {name}: searching idempotent CRL expansions (domain up to {max_dom})..."
         )
-        diagram_sentence = diagram(icrp)
-        idcrl_theory = Theory(assumptions=idcrl_axioms+diagram_sentence)
+        idcrl_theory = Theory(assumptions=assumptions)
         
         for idcrl in idcrl_theory.mace4(options=options,domain_size=n,end_size=max_dom,timeout_s=60).models():
             found = True
@@ -111,7 +148,7 @@ if __name__ == "__main__":
     for i, (model, idcrl) in enumerate(result.items(), start=1):
         if not args.ignore_distributive or idcrl.domain_size != n:
             _terminal_status(f"PDF {i}/{total}: drawing model {model}...")
-            fig = draw_idempotent_crl(idcrl,n=n)
+            fig = draw_idempotent_crl(idcrl,name=model,n=n)
             pdf.savefig(fig, bbox_inches='tight')
             plt.close(fig)
             pages += 1

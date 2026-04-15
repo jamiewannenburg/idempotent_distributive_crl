@@ -70,7 +70,7 @@ def arrow(x,y):
                 assert leq[dot(best, x), y], f"join of two elements that are not less than or equal to y: {best}, {i}, {x}, {y}"
     return best
 
-embedding = to_interpretation_text("861", extension_cardinality, dot, arrow, leq, 0)
+embedding = to_interpretation_text("861", extension_cardinality, meet, join, dot, arrow, leq, 0)
 
 print(embedding)
 with open("model_outputs/rsi_icrp-7-861-expansion.model", "w") as f:
@@ -78,7 +78,7 @@ with open("model_outputs/rsi_icrp-7-861-expansion.model", "w") as f:
 
 with open("model_outputs/rsi_icrp-7-861.model") as f:
     for model in parse_models_from_file(f):
-        name = re.search(r"number = (\d+)",model.raw).group(1)
+        name = re.search(r"number\s*=\s*(\d+)",model.raw).group(1)
         print(name)
         diagram_sentence = diagram(model)
         for i in range(7):

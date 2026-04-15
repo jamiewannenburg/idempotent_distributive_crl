@@ -3,14 +3,17 @@ import numpy as np
 import networkx as nx
 import itertools
 
-from typing import Function
+from collections.abc import Callable
 
-def to_interpretation_text(number: str, cardinality: int, dot: Function, arrow: Function, leq: np.ndarray, e: int):
+def leq_arrows(x:str, y:str):
+    return f"({x}\\{y}) = ({x}\\{y})\\({x}\\{y})"
+
+def to_interpretation_text(number: str, cardinality: int, dot: Callable, arrow: Callable, leq: np.ndarray, e: int):
     embedding = f"interpretation( {cardinality}, [number = {number}, seconds = 0], [\n"
     embedding += f"    function(*(_,_), [{op_to_string(dot, cardinality)}]),\n"
     embedding += f"    function(\\(_,_), [{op_to_string(arrow, cardinality)}]),\n"
     embedding += f"    relation(<=(_,_), [{matrix_to_string(leq, cardinality)}]),\n"
-    embedding += f"    function(e, [{e}]]).\n"
+    embedding += f"    function(e, [{e}])]).\n"
     return embedding
 
 def matrix_to_string(matrix, cardinality: int):
@@ -37,7 +40,7 @@ def get_le(leq: np.ndarray):
     np.fill_diagonal(le, False)
     return le
 
-def get_leq_from_idempotent_residual_operation(arrow: Function, cardinality: int):
+def get_leq_from_idempotent_residual_operation(arrow: Callable, cardinality: int):
     leq = np.zeros((cardinality, cardinality),dtype=bool)
     for i,j in itertools.product(range(cardinality), repeat=2):
         k = arrow(i, j)
@@ -54,7 +57,7 @@ def get_leq_from_idempotent_residual(model: Model):
 def get_le_from_idempotent_residual(model: Model):
     return get_le(get_leq_from_idempotent_residual(model))
 
-def get_leq_from_fusion_operation(dot: Function, cardinality: int):
+def get_leq_from_fusion_operation(dot: Callable, cardinality: int):
     leq = np.zeros((cardinality, cardinality),dtype=bool)
     for i,j in itertools.product(range(cardinality), repeat=2):
         if i == dot(i, j):

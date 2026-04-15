@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "find_expansions.py",
             "console": "integratedTerminal",
-            "args": ["3"]
+            "args": ["5"]
         },
         {
             "name": "Python Debugger: icrl.py with Arguments",

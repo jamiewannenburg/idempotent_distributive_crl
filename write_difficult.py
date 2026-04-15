@@ -15,7 +15,7 @@ if __name__ == "__main__":
         difficult = [line.strip() for line in f.readlines()]
     algebras = []
     for model in parse_models_from_file(model_filename):
-        name = re.search(r"number = (\d+)",model.raw).group(1)
+        name = re.search(r"number\s*=\s*(\d+)",model.raw).group(1)
         if name in difficult:
             algebras.append(model)
     icrps_pdf(algebras, pdf_filename)
