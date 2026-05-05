@@ -3,12 +3,14 @@ import os
 import sys
 from pyp9m4 import Theory, Model, InterpFilter, parse_models_from_file, parse_mace4_output
 from pyp9m4.options import Mace4CliOptions
-from axioms import idcrl_axioms
+from axioms import si_idcrl_axioms
 import re
 import itertools
 import tempfile
 from icrp import leq_arrows
 from conic_icrp import get_extension_interpretation_text, is_conic
+
+timeout = 60*60*3 # 3 hours
 
 def _terminal_status(msg: str, *, stream=None) -> None:
     """Print msg on one terminal line, replacing the previous status line."""
@@ -47,9 +49,9 @@ def diagram(model: Model):
     return diagram_sentence
 
 options = Mace4CliOptions(
-    end_size=12,
+    end_size=32,
     max_models=1,
-    max_seconds=60,
+    max_seconds=timeout,
 )
 
 
@@ -91,7 +93,7 @@ def main(n):
     for icrp in parse_models_from_file(filename):
         name = re.search(r"number\s*=\s*(\d+)",icrp.raw).group(1)
         diagram_sentence = diagram(icrp)
-        assumptions = idcrl_axioms+diagram_sentence
+        assumptions = si_idcrl_axioms+diagram_sentence
         
 
         found = False
@@ -109,13 +111,12 @@ def main(n):
                     print(f"model {name}: is seperable but expansion does not work")
                     print("Trying other methods...")
 
-        max_dom = 2**n + 2
         _terminal_status(
-            f"model {name}: searching idempotent CRL expansions (domain up to {max_dom})..."
+            f"model {name}: searching idempotent CRL expansion, {len(result)} total so far..."
         )
         idcrl_theory = Theory(assumptions=assumptions)
         
-        for idcrl in idcrl_theory.mace4(options=options,domain_size=n,end_size=max_dom,timeout_s=60).models():
+        for idcrl in idcrl_theory.mace4(options=options,domain_size=n,timeout_s=timeout).models():
             found = True
             result[name] = idcrl
             _terminal_status(
@@ -134,7 +135,7 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     from draw_orders import draw_idempotent_crl
     parser = argparse.ArgumentParser()
-    parser.add_argument("n", type=int)
+    parser.add_argument("n", type=str)
     parser.add_argument("-i", "--ignore-distributive", action="store_true")
     args = parser.parse_args()
     n = args.n
@@ -145,6 +146,7 @@ if __name__ == "__main__":
     pdf = matplotlib.backends.backend_pdf.PdfPages(filename = filename)
     total = len(result)
     pages = 0
+    n = int(re.search(r"(\d+)",n).group(1))
     for i, (model, idcrl) in enumerate(result.items(), start=1):
         if not args.ignore_distributive or idcrl.domain_size != n:
             _terminal_status(f"PDF {i}/{total}: drawing model {model}...")

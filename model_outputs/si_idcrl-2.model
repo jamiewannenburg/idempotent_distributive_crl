@@ -1,0 +1,15 @@
+interpretation( 2, [number = 1,seconds = 0], [
+    function(*(_,_), [
+        0,1,
+        1,1]),
+    function(\(_,_), [
+        0,1,
+        0,0]),
+    function(^(_,_), [
+        0,1,
+        1,1]),
+    function(v(_,_), [
+        0,0,
+        0,1]),
+    function(e, [0])]).
+% isofilter check * \ ^ v e output * \ ^ v e: input=2, kept=1, checks=1, perms=1, 0.01 seconds.

@@ -69,6 +69,9 @@ x*(y^z)<= (x*y)^(x*z).
 idcrl_axioms = crl_axioms + """
 x=x*x.
 x^(y v z)=(x^y)v(x^z).
+% helps speed up mace4 searches
+(x <= e & y <= e) -> (x * y = x ^ y).
+(e <= x & e <= y) -> (x * y = x v y).
 """
 
 si_idcrl_axioms = idcrl_axioms + """

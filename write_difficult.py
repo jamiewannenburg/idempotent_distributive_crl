@@ -5,9 +5,9 @@ import re
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("-d","--difficult", type=str, default="input/difficult-7.txt")
-    parser.add_argument("-i","--input", type=str, default="model_outputs/rsi_icrp-7.model")
-    parser.add_argument("-o","--output", type=str, default="output/rsi_icrp-7_difficult.pdf")
+    parser.add_argument("-d","--difficult", type=str, default="input/difficult-8.txt")
+    parser.add_argument("-i","--input", type=str, default="model_outputs/rsi_icrp-8.model")
+    parser.add_argument("-o","--output", type=str, default="output/rsi_icrp-8_difficult.pdf")
     args = parser.parse_args()
     model_filename = args.input
     pdf_filename = args.output
