@@ -9,7 +9,6 @@ from icrl import get_leq_from_meet_operation
 from icrl import to_interpretation_text as to_crl_interpretation_text
 from conic_icrp import principal_upset
 from axioms import idcrl_axioms
-from find_expansions import _terminal_status, diagram
 from typing import Callable
 
 
@@ -159,6 +158,7 @@ def get_extension_interpretation_text(number: str, model: Model):
 if __name__ == "__main__":
     import argparse
     from pathlib import Path
+    from find_expansions import diagram
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str)
     args = parser.parse_args()

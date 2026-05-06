@@ -8,9 +8,9 @@ import re
 import itertools
 import tempfile
 from icrp import leq_arrows
-from conic_icrp import get_extension_interpretation_text, is_conic
+from semigroup_extension import get_extension_interpretation_text
 
-timeout = 60*60*3 # 3 hours
+timeout = 60*3 # 3 minutes
 
 def _terminal_status(msg: str, *, stream=None) -> None:
     """Print msg on one terminal line, replacing the previous status line."""
@@ -70,21 +70,9 @@ def check_formulas(formulas: str, model: Model, print_output: bool = False):
             print(result.stdout)
         return False
 
-seperable_conic = f"""
-({leq_arrows('e','x')})|({leq_arrows('x','e')}).
-({leq_arrows('x','e')})->({leq_arrows('(x*y)','y')}).
-
-"""
-
-def is_seperable_conic(model: Model, print_output: bool = False):
-    return check_formulas(seperable_conic, model, print_output)
-
-# def print_interpretation(interpretation,er):
-#     print(interpretation)
-
 # get relatively subdirectly irreducible idempotent commutative residuated pomonoids
 def main(n):
-    difficult_filename = f"input/difficult-{n}.txt"
+    difficult_filename = f"input/nonsg_difficult-{n}.txt"
     if os.path.exists(difficult_filename):
         os.remove(difficult_filename)
     filename = f"model_outputs/rsi_icrp-{n}.model"
@@ -97,31 +85,36 @@ def main(n):
         
 
         found = False
-        if is_conic(icrp):
+        try:
             for alg in parse_mace4_output(get_extension_interpretation_text(name, icrp)).interpretations:
                 if check_formulas(assumptions, alg):
-                    result[name] = alg
+                    result[name] = {'alg': alg, 'semigroup_extension': True}
                     found = True
                     _terminal_status(
-                        f"model {name}: expansion found manually {len(result)} total so far)"
+                        f"model {name}: semigroup expansion found manually {len(result)} total so far)"
                     )
                     continue
                 else:
                     print()
-                    print(f"model {name}: is seperable but expansion does not work")
+                    print(f"model {name}: semigroup expansion is defined but does not satify axioms")
                     print("Trying other methods...")
-
-        _terminal_status(
-            f"model {name}: searching idempotent CRL expansion, {len(result)} total so far..."
-        )
-        idcrl_theory = Theory(assumptions=assumptions)
-        
-        for idcrl in idcrl_theory.mace4(options=options,domain_size=n,timeout_s=timeout).models():
-            found = True
-            result[name] = idcrl
+        except Exception as e:
+            print()
+            print(f"model {name}: error in semigroup extension generation: {e}")
+            print("Trying other methods...")
+        if not found:
             _terminal_status(
-                f"model {name}: expansion found ({len(result)} total so far)"
+                f"model {name}: searching idempotent CRL expansion, {len(result)} total so far..."
             )
+            idcrl_theory = Theory(assumptions=assumptions)
+            
+            for idcrl in idcrl_theory.mace4(options=options,domain_size=n,timeout_s=timeout).models():
+                found = True
+                result[name] = {'alg': idcrl, 'semigroup_extension': False}
+                _terminal_status(
+                    f"model {name}: expansion found ({len(result)} total so far)"
+                )
+
         if not found:
             with open(difficult_filename, "a") as f:
                 f.write(f"{name}\n")
@@ -136,19 +129,18 @@ if __name__ == "__main__":
     from draw_orders import draw_idempotent_crl
     parser = argparse.ArgumentParser()
     parser.add_argument("n", type=str)
-    parser.add_argument("-i", "--ignore-distributive", action="store_true")
     args = parser.parse_args()
     n = args.n
     result = main(n)
-    filename = f"output/rsi_icrp-{n}_expansions.pdf"
-    if args.ignore_distributive:
-        filename = f"output/rsi_icrp-{n}_proper_expansions.pdf"
+    filename = f"output/rsi_icrp-{n}_nonsg_expansions.pdf"
     pdf = matplotlib.backends.backend_pdf.PdfPages(filename = filename)
     total = len(result)
     pages = 0
     n = int(re.search(r"(\d+)",n).group(1))
-    for i, (model, idcrl) in enumerate(result.items(), start=1):
-        if not args.ignore_distributive or idcrl.domain_size != n:
+    for i, (model, data) in enumerate(result.items(), start=1):
+        idcrl = data['alg']
+        semigroup_extension = data['semigroup_extension']
+        if not data['semigroup_extension']:
             _terminal_status(f"PDF {i}/{total}: drawing model {model}...")
             fig = draw_idempotent_crl(idcrl,name=model,n=n)
             pdf.savefig(fig, bbox_inches='tight')
@@ -156,7 +148,6 @@ if __name__ == "__main__":
             pages += 1
     sys.stdout.write("\n")
     pdf.close()
-    if args.ignore_distributive:
-        print(f"Wrote {pages} page(s) to {filename!r}.", flush=True)
+    print(f"Wrote {pages} page(s) to {filename!r}.", flush=True)
     
     print(len(result), "expansions found")
