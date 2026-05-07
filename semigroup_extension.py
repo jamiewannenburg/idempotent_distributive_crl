@@ -10,7 +10,7 @@ from icrl import to_interpretation_text as to_crl_interpretation_text
 from conic_icrp import principal_upset
 from axioms import idcrl_axioms
 from typing import Callable
-
+from pyp9m4.parsers.mace4 import parse_mace4_output
 
 
 def check_formulas(formulas: str, model_string: str, print_output: bool = False):
@@ -159,18 +159,45 @@ if __name__ == "__main__":
     import argparse
     from pathlib import Path
     from find_expansions import diagram
+    import matplotlib.backends.backend_pdf
+    import matplotlib.pyplot as plt
+    from draw_orders import draw_idempotent_crl
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str)
+    parser.add_argument("-o", "--output", type=str)
+    # add optional argument a comma separated list of model numbers to check
+    parser.add_argument("-m", "--models", type=str, default=None)
     args = parser.parse_args()
+    if args.models is not None:
+        model_numbers = args.models.split(',')
+    else:
+        model_numbers = None
     model_filename = Path(args.input)
+    pdf_filename = args.output
+    if pdf_filename is None:
+        output_folder = Path('output')
+        pdf_filename = output_folder / model_filename.with_suffix("_sg_expansion.pdf")
+    else:
+        pdf_filename = Path(pdf_filename)
+    pdf = matplotlib.backends.backend_pdf.PdfPages(filename = str(pdf_filename))
     models = parse_models_from_file(model_filename)
     for model in models:
         name = re.search(r"number\s*=\s*(\d+)",model.raw).group(1)
+        n = int(re.search(r"interpretation\(\s*(\d+),",model.raw).group(1))
+        if model_numbers is not None and name not in model_numbers:
+            continue
         try:
-            extension = get_extension_interpretation_text(name, model)
-            if not check_formulas(idcrl_axioms+diagram(model), extension, print_output=True):
+            extension_text = get_extension_interpretation_text(name, model)
+            if not check_formulas(idcrl_axioms+diagram(model), extension_text, print_output=True):
                 print(f"model {name}: extension does not work")
+                print(extension_text)
+            else:
+                extension = parse_mace4_output(extension_text).interpretations[0]
                 print(extension)
+                fig = draw_idempotent_crl(extension,name=name,n=n)
+                pdf.savefig(fig, bbox_inches='tight')
+                plt.close(fig)
         except Exception as e:
             print(f"model {name}: error in extension generation: {e}")
             print(model)
+    pdf.close()
