@@ -1,33 +1,21 @@
-from pyp9m4 import Model, parse_models_from_file, InterpFilter
-import tempfile
-import os
+from pyp9m4 import Model, parse_models_from_file
+from pyp9m4.parsers.mace4 import parse_mace4_output
 import re
 import numpy as np
 import itertools
 from icrp import get_leq_from_idempotent_residual, leq_arrows
 from icrl import get_leq_from_meet_operation
 from icrl import to_interpretation_text as to_crl_interpretation_text
-from axioms import rsi_conic_icrp_axioms, check_formulas
-from upset_expansion import principal_upset
 
-def is_conic(model: Model, print_output: bool = False):
-    return check_formulas(f"({leq_arrows('e','x')})|({leq_arrows('x','e')}).\n", model.raw, print_output)
+def principal_upset(leq: np.ndarray, element: int):
+    return tuple(int(i) for i in np.nonzero(leq[element, :])[0])
 
-def is_rsi_conic_icrp(model: Model, print_output: bool = False):
-    return check_formulas(rsi_conic_icrp_axioms, model.raw, print_output)
-
-def get_positive_elements_from_leq(leq: np.ndarray, e: int):
-    positive_elements = []
-    for i in range(leq.shape[0]):
-        if leq[e, i]:
-            positive_elements.append(i)
-    return positive_elements
-
-def get_upsets(leq: np.ndarray, positive_elements: list):
+def get_upsets(leq: np.ndarray, domain_size: int):
     upsets = []
-    for subset in itertools.chain.from_iterable(itertools.combinations(positive_elements, r) for r in range(len(positive_elements)+1)):
-        if len(subset) == 0:
-            continue
+    universe = list(range(domain_size))
+    for subset in itertools.chain.from_iterable(itertools.combinations(universe, r) for r in range(len(universe)+1)):
+        # if len(subset) == 0:
+        #     continue
         upwards_closed = True
         for i in subset:
             if len(set(principal_upset(leq, i))-set(subset)) != 0:
@@ -72,12 +60,8 @@ def get_expansion_operations(model: Model):
     crp_leq = get_leq_from_idempotent_residual(model)
     crp_dot = model.as_function("*")
     crp_arrow = model.as_function("\\")
-    # TODO: this is a lattice order, so it should work
-    crp_meet = get_meet_from_leq(crp_leq)
-    crp_join = get_join_from_leq(crp_leq)
     e = model.get_value("e")
-    positive_elements = get_positive_elements_from_leq(crp_leq, e)
-    upsets = get_upsets(crp_leq, positive_elements)
+    upsets = get_upsets(crp_leq, model.domain_size)
     
     # get distributive lattice operations on the upsets
     def dl_meet(x,y):
@@ -89,14 +73,8 @@ def get_expansion_operations(model: Model):
     crp_to_dl = {}
     dl_to_crp = {}
     for i in range(model.domain_size):
-        if i in positive_elements:
-            # map positive elements to their principal upset
-            crp_to_dl[i] = principal_upset(crp_leq, i)
-            dl_to_crp[principal_upset(crp_leq, i)] = i
-        else:
-            # map negative elements to themselves
-            crp_to_dl[i] = i
-            dl_to_crp[i] = i
+        crp_to_dl[i] = principal_upset(crp_leq, i)
+        dl_to_crp[crp_to_dl[i]] = i
     i = model.domain_size
     for a in upsets:
         if a not in dl_to_crp:
@@ -105,44 +83,21 @@ def get_expansion_operations(model: Model):
             i += 1
     new_domain_size = len(crp_to_dl)
     # make operations on the new algebra
-    def pos(x):
-        return x>=model.domain_size or x in positive_elements
-    
     def meet(x,y):
-        if pos(x) and pos(y):
-            return dl_to_crp[dl_join(crp_to_dl[x], crp_to_dl[y])]
-        elif pos(x): # y is neg
-            return y
-        elif pos(y): # x is neg
-            return x
-        else: # x and y are neg
-            return crp_meet(x, y)
+        return dl_to_crp[dl_meet(crp_to_dl[x], crp_to_dl[y])]
     
     def join(x,y):
-        if pos(x) and pos(y):
-            return dl_to_crp[dl_meet(crp_to_dl[x], crp_to_dl[y])]
-        elif pos(x): # y is neg
-            return x
-        elif pos(y): # x is neg
-            return y
-        else: # x and y are neg
-            return crp_join(x, y)
+        return dl_to_crp[dl_join(crp_to_dl[x], crp_to_dl[y])]
 
     def dot(x,y):
-        if pos(x) and pos(y):
-            return dl_to_crp[dl_meet(crp_to_dl[x], crp_to_dl[y])]
-        elif pos(x): # y is neg
-            if leq[x, crp_arrow(y, y)]:
-                return y
-            else:
-                return x
-        elif pos(y): # x is neg
-            if leq[y, crp_arrow(x, x)]:
-                return x
-            else:
-                return y
-        else: # x and y are neg
-            return crp_dot(x, y)
+        # pointwise multiplication
+        xs = crp_to_dl[x]
+        ys = crp_to_dl[y]
+        result_set = set()
+        for i,j in itertools.product(xs, ys):
+            # union of result_set with principal_upset(leq, crp_dot(i, j))
+            result_set.update(principal_upset(crp_leq, crp_dot(i, j)))
+        return dl_to_crp[tuple(sorted(result_set))]
 
     leq = get_leq_from_meet_operation(meet, new_domain_size)
 
@@ -158,8 +113,9 @@ def get_expansion_operations(model: Model):
                 elif leq[i, best]:
                     best = best
                 else:
-                    best = join(best, i)
-                    assert leq[dot(best, x), y], f"join of two elements that are not less than or equal to y: {best}, {i}, {x}, {y}"
+                    new_best = join(best, i)
+                    assert leq[dot(new_best, x), y], f"{crp_to_dl[x]} * {crp_to_dl[i]} = {crp_to_dl[dot(i, x)]} <= {crp_to_dl[y]} and \n{crp_to_dl[x]} * {crp_to_dl[best]} = {crp_to_dl[dot(best, x)]} <= {crp_to_dl[y]} but the join\n {crp_to_dl[x]} * {crp_to_dl[new_best]} = {crp_to_dl[dot(new_best, x)]} not <= {crp_to_dl[y]}"
+                    best = new_best
         return best
 
     return new_domain_size, meet, join, dot, arrow, leq, e
@@ -171,14 +127,42 @@ def get_expansion_interpretation_text(number: str, model: Model):
 if __name__ == "__main__":
     import argparse
     from pathlib import Path
+    from find_expansions import diagram
+    import matplotlib.backends.backend_pdf
+    import matplotlib.pyplot as plt
+    from draw_orders import draw_idempotent_crl
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str)
+    parser.add_argument("-o", "--output", type=str)
+    # add optional argument a comma separated list of model numbers to check
+    parser.add_argument("-m", "--models", type=str, default=None)
     args = parser.parse_args()
+    if args.models is not None:
+        model_numbers = args.models.split(',')
+    else:
+        model_numbers = None
     model_filename = Path(args.input)
+    pdf_filename = args.output
+    if pdf_filename is None:
+        output_folder = Path('output')
+        pdf_filename = output_folder / model_filename.with_suffix("_upset_expansion.pdf")
+    else:
+        pdf_filename = Path(pdf_filename)
+    pdf = matplotlib.backends.backend_pdf.PdfPages(filename = str(pdf_filename))
     models = parse_models_from_file(model_filename)
     for model in models:
         name = re.search(r"number\s*=\s*(\d+)",model.raw).group(1)
-        if is_conic(model):
-            print(f"model {name} is conic")
-        # else:
-        #     print(f"model {name} is not conic")
+        n = int(re.search(r"interpretation\(\s*(\d+),",model.raw).group(1))
+        if model_numbers is not None and name not in model_numbers:
+            continue
+        try:
+            expansion_text = get_expansion_interpretation_text(name, model)
+            expansion = parse_mace4_output(expansion_text).interpretations[0]
+            print(expansion)
+            fig = draw_idempotent_crl(expansion,name=name,n=n)
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+        except Exception as e:
+            print(f"model {name}: error in expansion generation: {e}")
+            print(model)
+    pdf.close()

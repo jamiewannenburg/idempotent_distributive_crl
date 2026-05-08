@@ -8,7 +8,8 @@ import re
 import itertools
 import tempfile
 from icrp import leq_arrows
-from semigroup_extension import get_extension_interpretation_text
+from semigroup_expansion import get_expansion_interpretation_text as get_sg_expansion_interpretation_text
+from upset_expansion import get_expansion_interpretation_text as get_upset_expansion_interpretation_text
 
 timeout = 60*3 # 3 minutes
 
@@ -85,10 +86,11 @@ def main(n):
         
 
         found = False
-        try:
-            for alg in parse_mace4_output(get_extension_interpretation_text(name, icrp)).interpretations:
+        # try:
+        for sg_alg in parse_mace4_output(get_sg_expansion_interpretation_text(name, icrp)).interpretations:
+            for alg in parse_mace4_output(get_sg_expansion_interpretation_text(name, sg_alg)).interpretations:
                 if check_formulas(assumptions, alg):
-                    result[name] = {'alg': alg, 'semigroup_extension': True}
+                    result[name] = {'alg': alg, 'semigroup_expansion': True}
                     found = True
                     _terminal_status(
                         f"model {name}: semigroup expansion found manually {len(result)} total so far)"
@@ -98,10 +100,10 @@ def main(n):
                     print()
                     print(f"model {name}: semigroup expansion is defined but does not satify axioms")
                     print("Trying other methods...")
-        except Exception as e:
-            print()
-            print(f"model {name}: error in semigroup extension generation: {e}")
-            print("Trying other methods...")
+        # except Exception as e:
+        #     print()
+        #     print(f"model {name}: error in semigroup expansion generation: {e}")
+        #     print("Trying other methods...")
         if not found:
             _terminal_status(
                 f"model {name}: searching idempotent CRL expansion, {len(result)} total so far..."
@@ -110,7 +112,7 @@ def main(n):
             
             for idcrl in idcrl_theory.mace4(options=options,domain_size=n,timeout_s=timeout).models():
                 found = True
-                result[name] = {'alg': idcrl, 'semigroup_extension': False}
+                result[name] = {'alg': idcrl, 'semigroup_expansion': False}
                 _terminal_status(
                     f"model {name}: expansion found ({len(result)} total so far)"
                 )
@@ -139,8 +141,8 @@ if __name__ == "__main__":
     n = int(re.search(r"(\d+)",n).group(1))
     for i, (model, data) in enumerate(result.items(), start=1):
         idcrl = data['alg']
-        semigroup_extension = data['semigroup_extension']
-        if not data['semigroup_extension']:
+        semigroup_expansion = data['semigroup_expansion']
+        if not data['semigroup_expansion']:
             _terminal_status(f"PDF {i}/{total}: drawing model {model}...")
             fig = draw_idempotent_crl(idcrl,name=model,n=n)
             pdf.savefig(fig, bbox_inches='tight')

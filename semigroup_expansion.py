@@ -1,31 +1,15 @@
-from pyp9m4 import Model, parse_models_from_file, InterpFilter
-import tempfile
-import os
+from pyp9m4 import Model, parse_models_from_file
 import re
 import numpy as np
 import itertools
 from icrp import get_leq_from_idempotent_residual, leq_arrows
 from icrl import get_leq_from_meet_operation
 from icrl import to_interpretation_text as to_crl_interpretation_text
-from conic_icrp import principal_upset
-from axioms import idcrl_axioms
+from upset_expansion import principal_upset
+from axioms import idcrl_axioms, check_formulas
 from typing import Callable
 from pyp9m4.parsers.mace4 import parse_mace4_output
 
-
-def check_formulas(formulas: str, model_string: str, print_output: bool = False):
-    temp_file = tempfile.NamedTemporaryFile(delete=False)
-    temp_file.write(formulas.encode('utf-8'))
-    temp_file.close()
-    result = InterpFilter().run(input=model_string,formulas_file=temp_file.name,test='all_true')
-    os.unlink(temp_file.name)
-    m = re.search("checked 1, passed 1", result.stdout)
-    if m:
-        return True
-    else:
-        if print_output:
-            print(result.stdout)
-        return False
 
 def upsemigroup_generator(leq: np.ndarray, dot: Callable[[int, int], int], domain_size: int, i: int):
     upsemigroup = set(principal_upset(leq, i))
@@ -52,8 +36,8 @@ def get_upsemigroups(leq: np.ndarray, dot: Callable[[int, int], int], domain_siz
     upsemigroups = []
     universe = list(range(domain_size))
     for subset in itertools.chain.from_iterable(itertools.combinations(universe, r) for r in range(len(universe)+1)):
-        if len(subset) == 0:
-            continue
+        # if len(subset) == 0:
+        #     continue
         closed = True
         for i in subset:
             if len(set(principal_upset(leq, i))-set(subset)) != 0:
@@ -68,7 +52,7 @@ def get_upsemigroups(leq: np.ndarray, dot: Callable[[int, int], int], domain_siz
             upsemigroups.append(subset)
     return upsemigroups
 
-def get_extension_operations(model: Model):
+def get_expansion_operations(model: Model):
     crp_leq = get_leq_from_idempotent_residual(model)
     crp_dot = model.as_function("*")
     crp_arrow = model.as_function("\\")
@@ -116,9 +100,9 @@ def get_extension_operations(model: Model):
     new_domain_size = len(crp_to_dl)
     # make operations on the new algebra (distributive lattice upside down)
     def meet(x,y):
-        return dl_to_crp[dl_join(crp_to_dl[x], crp_to_dl[y])]
-    def join(x,y):
         return dl_to_crp[dl_meet(crp_to_dl[x], crp_to_dl[y])]
+    def join(x,y):
+        return dl_to_crp[dl_join(crp_to_dl[x], crp_to_dl[y])]
         
     def dot(x,y):
         # pointwise multiplication
@@ -147,12 +131,14 @@ def get_extension_operations(model: Model):
                     new_best = join(best, i)
                     assert leq[dot(new_best, x), y], f"{crp_to_dl[x]} * {crp_to_dl[i]} = {crp_to_dl[dot(i, x)]} <= {crp_to_dl[y]} and \n{crp_to_dl[x]} * {crp_to_dl[best]} = {crp_to_dl[dot(best, x)]} <= {crp_to_dl[y]} but the join\n {crp_to_dl[x]} * {crp_to_dl[new_best]} = {crp_to_dl[dot(new_best, x)]} not <= {crp_to_dl[y]}"
                     best = new_best
+        if best is None:
+            raise ValueError(f"no element whose dot with {x} is less than or equal to {y}")
         return best
 
     return new_domain_size, meet, join, dot, arrow, leq, e
 
-def get_extension_interpretation_text(number: str, model: Model):
-    new_domain_size, meet, join, dot, arrow, leq, e = get_extension_operations(model)
+def get_expansion_interpretation_text(number: str, model: Model):
+    new_domain_size, meet, join, dot, arrow, leq, e = get_expansion_operations(model)
     return to_crl_interpretation_text(number, new_domain_size, meet, join, dot, arrow, leq, e)
 
 if __name__ == "__main__":
@@ -161,7 +147,8 @@ if __name__ == "__main__":
     from find_expansions import diagram
     import matplotlib.backends.backend_pdf
     import matplotlib.pyplot as plt
-    from draw_orders import draw_idempotent_crl
+    from draw_orders import draw_idempotent_crl, draw_graph
+    from icrl import get_le, get_join_irreducibles_from_graph, get_graph_from_le
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str)
     parser.add_argument("-o", "--output", type=str)
@@ -186,18 +173,43 @@ if __name__ == "__main__":
         n = int(re.search(r"interpretation\(\s*(\d+),",model.raw).group(1))
         if model_numbers is not None and name not in model_numbers:
             continue
-        try:
-            extension_text = get_extension_interpretation_text(name, model)
-            if not check_formulas(idcrl_axioms+diagram(model), extension_text, print_output=True):
-                print(f"model {name}: extension does not work")
-                print(extension_text)
+        # try:
+        first_expansion_text = get_expansion_interpretation_text(name, model)
+        first_expansion = parse_mace4_output(first_expansion_text).interpretations[0]
+        expansion_text = get_expansion_interpretation_text(name, first_expansion)
+        print(expansion_text)
+        expansion = parse_mace4_output(expansion_text).interpretations[0]
+        #fig = draw_idempotent_crl(expansion,name=name,n=n)
+        
+        universe = list(range(model.domain_size))
+        card = model.domain_size
+        colors = []
+        for i in range(n):
+            colors.append('orange')
+        for i in range(card-n):
+            colors.append('lightblue')
+        print(model.relation_symbols)
+        leq = np.zeros((model.domain_size, model.domain_size), dtype=bool)
+        for i,j in itertools.product(range(model.domain_size), repeat=2):
+            if model.holds("<=(_,_)", i, j):
+                leq[i, j] = True
             else:
-                extension = parse_mace4_output(extension_text).interpretations[0]
-                print(extension)
-                fig = draw_idempotent_crl(extension,name=name,n=n)
-                pdf.savefig(fig, bbox_inches='tight')
-                plt.close(fig)
-        except Exception as e:
-            print(f"model {name}: error in extension generation: {e}")
-            print(model)
+                leq[i, j] = False
+        le = get_le(leq)
+        le_graph = get_graph_from_le(le)
+        join_irreducibles_list = get_join_irreducibles_from_graph(le_graph)
+        
+        # Create figure with three subplots side by side
+        fig, ax1 = plt.subplots(1, 1, figsize=(10, 4))
+        fig.suptitle(f"model{name}", fontsize=14, fontweight='bold')
+        
+        # Draw join graph (Join Lattice) using Hasse diagram layout
+        ax1 = draw_graph(ax1, le_graph, "Lattice", node_colors=colors, highlight_nodes=join_irreducibles_list)
+        
+        plt.tight_layout()
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
+        # except Exception as e:
+        #     print(f"model {name}: error in expansion generation: {e}")
+        #     print(model)
     pdf.close()
