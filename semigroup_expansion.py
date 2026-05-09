@@ -2,8 +2,8 @@ from pyp9m4 import Model, parse_models_from_file
 import re
 import numpy as np
 import itertools
-from icrp import get_leq_from_idempotent_residual, leq_arrows
-from icrl import get_leq_from_meet_operation
+from icrp import get_leq_from_idempotent_residual, leq_arrows, get_fusion_graph
+from icrl import get_leq_from_meet_operation, get_le, get_join_irreducibles_from_graph, get_graph_from_le
 from icrl import to_interpretation_text as to_crl_interpretation_text
 from upset_expansion import principal_upset
 from axioms import idcrl_axioms, check_formulas
@@ -141,14 +141,62 @@ def get_expansion_interpretation_text(number: str, model: Model):
     new_domain_size, meet, join, dot, arrow, leq, e = get_expansion_operations(model)
     return to_crl_interpretation_text(number, new_domain_size, meet, join, dot, arrow, leq, e)
 
+def get_le_graph(model: Model):
+    leq = np.zeros((model.domain_size, model.domain_size), dtype=bool)
+    for i,j in itertools.product(range(model.domain_size), repeat=2):
+        if model.holds("<=", i, j):
+            leq[i, j] = True
+        else:
+            leq[i, j] = False
+    le = get_le(leq)
+    return get_graph_from_le(le)
+
+def get_le_graph_colors_and_highlight_nodes(model: Model, n: int):
+    card = model.domain_size
+    colors = []
+    for i in range(n):
+        colors.append('orange')
+    for i in range(card-n):
+        colors.append('lightblue')
+    le_graph = get_le_graph(model)
+    join_irreducibles_list = get_join_irreducibles_from_graph(le_graph)
+    return le_graph, colors, join_irreducibles_list
+
+def draw_le_graph(ax, model: Model, n: int, title: str = "Lattice"):
+    le_graph, colors, join_irreducibles_list = get_le_graph_colors_and_highlight_nodes(model, n)
+    ax = draw_graph(ax, le_graph, title, node_colors=colors, highlight_nodes=join_irreducibles_list)
+    return ax
+
+def draw_fusion_graph(ax, model: Model, n: int, title: str = "Fusion SemiLattice"):
+    le_graph, colors, join_irreducibles_list = get_le_graph_colors_and_highlight_nodes(model, n)
+    fusion_graph = get_fusion_graph(model)
+    ax = draw_graph(ax, fusion_graph, title, node_colors=colors, highlight_nodes=join_irreducibles_list)
+    return ax
+
+def check_idempotent(model: Model):
+    for i in range(model.domain_size):
+        if model.get_value("*", i, i) != i:
+            print(f"model {model.number} is not idempotent at {i}^2={model.value_at('*', i, i)}")
+            return False
+    return True
+
+def check_expansion(model: Model, expansion: Model):
+    for i,j in itertools.product(range(model.domain_size), repeat=2):
+        if model.value_at("*", i, j) != expansion.value_at("*", i, j):
+            print(f"expansion {model.number} does not agree on {i} * {j}")
+            return False
+        if model.value_at("\\", i, j) != expansion.value_at("\\", i, j):
+            print(f"expansion {model.number} does not agree on {i} \\ {j}")
+            return False
+    return True
+
 if __name__ == "__main__":
     import argparse
     from pathlib import Path
-    from find_expansions import diagram
+    from find_expansions import diagram, check_formulas
     import matplotlib.backends.backend_pdf
     import matplotlib.pyplot as plt
     from draw_orders import draw_idempotent_crl, draw_graph
-    from icrl import get_le, get_join_irreducibles_from_graph, get_graph_from_le
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str)
     parser.add_argument("-o", "--output", type=str)
@@ -163,48 +211,48 @@ if __name__ == "__main__":
     pdf_filename = args.output
     if pdf_filename is None:
         output_folder = Path('output')
-        pdf_filename = output_folder / model_filename.with_suffix("_sg_expansion.pdf")
+        pdf_filename = output_folder / (model_filename.stem+"_sg_expansion.pdf")
     else:
         pdf_filename = Path(pdf_filename)
     pdf = matplotlib.backends.backend_pdf.PdfPages(filename = str(pdf_filename))
     models = parse_models_from_file(model_filename)
     for model in models:
         name = re.search(r"number\s*=\s*(\d+)",model.raw).group(1)
-        n = int(re.search(r"interpretation\(\s*(\d+),",model.raw).group(1))
+        n = model.domain_size
         if model_numbers is not None and name not in model_numbers:
             continue
         # try:
         first_expansion_text = get_expansion_interpretation_text(name, model)
         first_expansion = parse_mace4_output(first_expansion_text).interpretations[0]
+        first_idempotent = check_idempotent(first_expansion)
         expansion_text = get_expansion_interpretation_text(name, first_expansion)
         print(expansion_text)
         expansion = parse_mace4_output(expansion_text).interpretations[0]
+        second_idempotent = check_idempotent(expansion)
+
+        check_expansion(model, expansion)
+        if not check_formulas("x^(y v z)=(x^y)v(x^z).",expansion):
+            print(f"expansion {name} does not satisfy the distributive property")
+
         #fig = draw_idempotent_crl(expansion,name=name,n=n)
         
-        universe = list(range(model.domain_size))
-        card = model.domain_size
-        colors = []
-        for i in range(n):
-            colors.append('orange')
-        for i in range(card-n):
-            colors.append('lightblue')
-        print(model.relation_symbols)
-        leq = np.zeros((model.domain_size, model.domain_size), dtype=bool)
-        for i,j in itertools.product(range(model.domain_size), repeat=2):
-            if model.holds("<=(_,_)", i, j):
-                leq[i, j] = True
-            else:
-                leq[i, j] = False
-        le = get_le(leq)
-        le_graph = get_graph_from_le(le)
-        join_irreducibles_list = get_join_irreducibles_from_graph(le_graph)
-        
         # Create figure with three subplots side by side
-        fig, ax1 = plt.subplots(1, 1, figsize=(10, 4))
+        if first_idempotent and second_idempotent:
+            fig, (ax1,ax2,ax3,ax4) = plt.subplots(1, 4, figsize=(10, 4))
+            ax1 = draw_fusion_graph(ax1, first_expansion, n, title="First Expansion Fusion SemiLattice")
+            ax2 = draw_le_graph(ax2, first_expansion, n, title="First Expansion Lattice")
+            ax3 = draw_fusion_graph(ax3, expansion, n, title="Second Expansion Fusion SemiLattice")
+            ax4 = draw_le_graph(ax4, expansion, n, title="Second Expansion Lattice")
+        elif first_idempotent:
+            fig, (ax1,ax2,ax3) = plt.subplots(1, 3, figsize=(10, 4))
+            ax1 = draw_fusion_graph(ax1, first_expansion, n, title="First Expansion Fusion SemiLattice")
+            ax2 = draw_le_graph(ax2, first_expansion, n, title="First Expansion Lattice")
+            ax3 = draw_le_graph(ax3, expansion, n, title="Second Expansion Lattice")
+        else:
+            fig, (ax1,ax2) = plt.subplots(1, 2, figsize=(10, 4))
+            ax1 = draw_le_graph(ax1, first_expansion, n, title="First Expansion Lattice")
+            ax2 = draw_le_graph(ax2, expansion, n, title="Second Expansion Lattice")
         fig.suptitle(f"model{name}", fontsize=14, fontweight='bold')
-        
-        # Draw join graph (Join Lattice) using Hasse diagram layout
-        ax1 = draw_graph(ax1, le_graph, "Lattice", node_colors=colors, highlight_nodes=join_irreducibles_list)
         
         plt.tight_layout()
         pdf.savefig(fig, bbox_inches='tight')

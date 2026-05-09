@@ -5,20 +5,33 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python Debugger: find_expansions.py with Arguments",
+            "name": "Python Debugger: Current File with Arguments",
             "type": "debugpy",
             "request": "launch",
-            "program": "find_expansions.py",
+            "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["5"]
+            "args": "${command:pickArgs}"
         },
         {
-            "name": "Python Debugger: icrl.py with Arguments",
+            "name": "Python Debugger: Arguments n=5",
             "type": "debugpy",
             "request": "launch",
-            "program": "icrl.py",
+            "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["-i", "model_outputs/rsi_icrp-7-861-expansion.model"]
-        }
+            "args": [
+                "5"
+            ]
+        },
+        {
+            "name": "Python Debugger: Arguments -i model_outputs/rsi_icrp-7.model",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [
+                "-i",
+                "model_outputs/rsi_icrp-7.model"
+            ]
+        },
     ]
 }
