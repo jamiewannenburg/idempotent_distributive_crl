@@ -30,7 +30,7 @@
             "console": "integratedTerminal",
             "args": [
                 "-i",
-                "model_outputs/rsi_icrp-7.model"
+                "model_outputs/rsi_icrp-5.model"
             ]
         },
     ]

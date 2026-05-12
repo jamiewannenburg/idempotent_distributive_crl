@@ -9,6 +9,7 @@ from upset_expansion import principal_upset
 from axioms import idcrl_axioms, check_formulas
 from typing import Callable
 from pyp9m4.parsers.mace4 import parse_mace4_output
+from draw_orders import draw_idempotent_crl, draw_graph
 
 
 def upsemigroup_generator(leq: np.ndarray, dot: Callable[[int, int], int], domain_size: int, i: int):
@@ -196,7 +197,6 @@ if __name__ == "__main__":
     from find_expansions import diagram, check_formulas
     import matplotlib.backends.backend_pdf
     import matplotlib.pyplot as plt
-    from draw_orders import draw_idempotent_crl, draw_graph
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str)
     parser.add_argument("-o", "--output", type=str)
