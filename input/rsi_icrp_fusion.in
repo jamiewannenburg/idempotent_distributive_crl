@@ -1,0 +1,40 @@
+% Saved by Prover9-Mace4 Version 0.5, December 2007.
+
+set(ignore_option_dependencies). % GUI handles dependencies
+
+if(Prover9). % Options for Prover9
+  assign(max_seconds, 60).
+end_if.
+
+if(Mace4).   % Options for Mace4
+  assign(max_seconds, 60).
+end_if.
+
+formulas(assumptions).
+
+x<=x.
+(x<=y & y<=z) -> x<=z.
+(x<=y & y<=x) -> x=y.
+
+x*(y*z)=(x*y)*z.
+x*y = y*x.
+e*x=x.
+
+x<=y -> z*x <= z*y.
+
+(x*y<=z)<->(y<=x\z).
+
+x=x*x.
+
+% f is splitting element
+-(e <= f).
+e<=y | y<=f.
+
+exists x exists y (e <= x & y <= f & -(y=f) & -(x<=(y\y)) & x*y <= f & y <= x*y & -(y = x*y)).
+
+end_of_list.
+
+formulas(goals).
+
+end_of_list.
+
