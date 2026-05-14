@@ -6,6 +6,7 @@ import itertools
 from icrp import get_leq_from_idempotent_residual, leq_arrows
 from icrl import get_leq_from_meet_operation
 from icrl import to_interpretation_text as to_crl_interpretation_text
+from semigroup_expansion import get_expansion_interpretation_text as get_sg_expansion_interpretation_text
 from upset_expansion import principal_upset
 from typing import Any, Callable
 
@@ -44,7 +45,7 @@ def get_leq_array_from_relation(relation: Callable[[int, int], bool], domain_siz
     return leq
 
 
-def get_filter_expansion_operations(m: Model): # CRL
+def get_expansion_operations(m: Model): # CRL
     leq = get_leq_array(m)
     dot = m.as_function("*")
     meet = m.as_function("^")
@@ -136,8 +137,8 @@ def get_filter_expansion_operations(m: Model): # CRL
 
     return new_domain_size, exmeet, exjoin, exdot, exarrow, exleq, e
 
-def get_filter_expansion_interpretation_text(number: str, m: Model):
-    new_domain_size, meet, join, dot, arrow, leq, e = get_filter_expansion_operations(m)
+def get_expansion_interpretation_text(number: str, m: Model):
+    new_domain_size, meet, join, dot, arrow, leq, e = get_expansion_operations(m)
     return to_crl_interpretation_text(number, new_domain_size, meet, join, dot, arrow, leq, e)
 
 
@@ -148,8 +149,7 @@ if __name__ == "__main__":
     import matplotlib.backends.backend_pdf
     import matplotlib.pyplot as plt
     from semigroup_expansion import draw_fusion_graph, draw_le_graph, check_idempotent, check_expansion
-    from semigroup_expansion import get_expansion_interpretation_text as get_sg_expansion_interpretation_text
-
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str)
     parser.add_argument("-o", "--output", type=str)
@@ -186,7 +186,7 @@ if __name__ == "__main__":
         if not check_formulas("x^(y v z)=(x^y)v(x^z).",first_expansion):
             print(f"first expansion of model {name} is not distributive")
 
-        expansion_text = get_filter_expansion_interpretation_text(name, first_expansion)
+        expansion_text = get_expansion_interpretation_text(name, first_expansion)
         print(expansion_text)
         expansion = parse_mace4_output(expansion_text).interpretations[0]
         second_idempotent = check_idempotent(expansion)
