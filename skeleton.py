@@ -4,8 +4,10 @@ import networkx as nx
 import numpy as np
 import matplotlib.colors as mcolors
 import colorsys
+import itertools
 from draw_orders import hasse_layout
-from icrp import get_graph_from_idempotent_residual, get_fusion_graph
+from icrp import get_graph_from_idempotent_residual, get_fusion_graph, get_leq_from_idempotent_residual_operation
+from conic_icrp import get_join_from_leq
 
 def draw_closed_graph(ax, graph: nx.DiGraph, title: str = "", node_colors: list[str] = [], highlight_nodes: list = []):
     if len(node_colors) == 0:
@@ -59,6 +61,10 @@ if __name__ == "__main__":
     models = parse_models_from_file(model_filename)
     for model in models:
         name = re.search(r"number\s*=\s*(\d+)",model.raw).group(1)
+        arrow_function = model.as_function("\\")
+        leq_array = get_leq_from_idempotent_residual_operation(arrow_function, model.domain_size)
+        
+        e = model.get_value("e")
         n = model.domain_size
         if model_numbers is not None and name not in model_numbers:
             continue
@@ -79,7 +85,32 @@ if __name__ == "__main__":
             if i == aeae:
                 closed_elements.append(i)
             table.append([ae, aeae])
+
         table = np.array(table).T.tolist()
+        # sub order
+        leq_sub_array = np.zeros((len(closed_elements), len(closed_elements)))
+        for i,x in enumerate(closed_elements):
+            for j,y in enumerate(closed_elements):
+                if leq_array[x, y]:
+                    leq_sub_array[i, j] = True
+                else:
+                    leq_sub_array[i, j] = False
+        join_function = get_join_from_leq(leq_sub_array)
+        # check closure under arrow
+        for i,j in itertools.product(closed_elements, repeat=2):
+            if arrow_function(i, j) not in closed_elements:
+                print(f"model {name}: closure under arrow failed for {i} and {j}")
+                break
+            
+        # check Godel-Dummett condition
+        for i,j in itertools.product(closed_elements, repeat=2):
+            af = arrow_function(i, j)
+            bf = arrow_function(j, i)
+            jo = closed_elements[join_function(closed_elements.index(af), closed_elements.index(bf))]
+            if not leq_array[e, jo]:
+                print(f"model {name}: Godel-Dummett condition failed for {i} and {j}, e not <= {af}v{bf}={jo}")
+                break
+
 
         le_graph = get_graph_from_idempotent_residual(model)
         fusion_graph = get_fusion_graph(model)
@@ -95,7 +126,7 @@ if __name__ == "__main__":
         table_ax.axis('off')
         fig.suptitle(f"model{name}", fontsize=14, fontweight='bold')
         
-        # plt.tight_layout()
+        plt.tight_layout()
         pdf.savefig(fig, bbox_inches='tight')
         plt.close(fig)
         # except Exception as e:
