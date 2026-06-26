@@ -43,7 +43,7 @@ commutative_po_monoid_axioms = po_axioms + commutative_monoid_axioms + """
 x<=y -> z*x <= z*y.
 """
 
-crp_axioms = commutative_po_monoid_axioms + """
+crp_axioms = commutative_po_monoid_axioms + r"""
 (x*y<=z)<->(y<=x\z).
 """
 
@@ -64,7 +64,7 @@ rsi_conic_icrp_axioms = rsi_icrp_axioms + """
 x<=e | e<=x.
 """
 
-crl_axioms = lattice_axioms + commutative_monoid_axioms + """
+crl_axioms = lattice_axioms + commutative_monoid_axioms + r"""
 x<=y\(y*x).
 x*(x\y) <= y.
 x*(y^z)<= (x*y)^(x*z).
