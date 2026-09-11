@@ -1,9 +1,10 @@
-from pyp9m4 import Model, parse_models_from_file
-import numpy as np
-import networkx as nx
 import itertools
-
 from collections.abc import Callable
+
+import networkx as nx
+import numpy as np
+from pyp9m4 import Model, parse_models_from_file
+
 
 def leq_arrows(x:str, y:str):
     return f"({x}\\{y}) = ({x}\\{y})\\({x}\\{y})"
@@ -26,7 +27,6 @@ def matrix_to_string(matrix, cardinality: int):
     return ','.join(table)
 
 def op_to_string(op, cardinality: int):
-    s = ""
     table = []
     for i,j in itertools.product(range(cardinality), repeat=2):
         if i!=0 and j == 0:
@@ -95,7 +95,9 @@ def get_graphs(model: Model):
 if __name__ == "__main__":
     import argparse
     from pathlib import Path
+
     from draw_orders import icrps_pdf
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", type=str)
     parser.add_argument("-o", "--output", type=str)

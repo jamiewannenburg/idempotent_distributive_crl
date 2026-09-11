@@ -1,0 +1,4 @@
+matplotlib
+networkx
+sympy
+pyp9m4 @ git+https://github.com/jamiewannenburg/pyp9m4.git@oo
