@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import matplotlib.backends.backend_pdf
 import matplotlib.colors as mcolors
 import colorsys
+import math
 import networkx as nx
 from pyp9m4 import Model, parse_models_from_file
 import re
@@ -11,6 +12,17 @@ from typing import Iterable
 
 from icrp import get_graphs as icrp_to_graphs
 from icrl import get_graphs as icrl_to_graphs, get_join_irreducibles_from_graph
+
+# Layout scores: node/edge collisions are much worse than ordinary crossings.
+_CROSSING_PENALTY = 1.0
+_NODE_HIT_PENALTY = 1000.0
+_EDGE_OVERLAP_PENALTY = 1000.0
+_NODE_OVERLAP_PENALTY = 1000.0
+_NODE_HIT_RADIUS = 0.28
+_NODE_MIN_DIST = 0.55
+_LEVEL_X_GAP = 0.75
+_EDGE_OVERLAP_DIST = 0.08
+_EDGE_OVERLAP_MIN_LEN = 0.35
 
 # Helper function to compute levels for Hasse diagram layout
 def compute_levels(G):
@@ -59,48 +71,176 @@ def _node_sort_key(n):
     return (str(n), n)
 
 
-def _crossings_between_layers(G, levels, order_lo, order_hi, lo, hi):
-    """Count edge crossings between nodes on level lo and level hi (hi == lo + 1)."""
-    idx_lo = {n: i for i, n in enumerate(order_lo)}
-    idx_hi = {n: i for i, n in enumerate(order_hi)}
-    edge_pairs = []
-    for u, v in G.edges():
-        if levels.get(u) == lo and levels.get(v) == hi:
-            if u in idx_lo and v in idx_hi:
-                edge_pairs.append((idx_lo[u], idx_hi[v]))
-    c = 0
-    for i in range(len(edge_pairs)):
-        x1, y1 = edge_pairs[i]
-        for j in range(i + 1, len(edge_pairs)):
-            x2, y2 = edge_pairs[j]
-            if x1 == x2 or y1 == y2:
+def _orient(a, b, c):
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _proper_segment_intersect(p1, p2, q1, q2):
+    """True if the open segments p1-p2 and q1-q2 cross."""
+    if p1 == q1 or p1 == q2 or p2 == q1 or p2 == q2:
+        return False
+    o1 = _orient(p1, p2, q1)
+    o2 = _orient(p1, p2, q2)
+    o3 = _orient(q1, q2, p1)
+    o4 = _orient(q1, q2, p2)
+    return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
+
+
+def _point_hits_segment(p, a, b, radius=_NODE_HIT_RADIUS):
+    """True if p lies near the interior of segment a-b."""
+    ax, ay = a
+    bx, by = b
+    px, py = p
+    vx, vy = bx - ax, by - ay
+    len2 = vx * vx + vy * vy
+    if len2 < 1e-18:
+        return False
+    t = ((px - ax) * vx + (py - ay) * vy) / len2
+    if t <= 0.06 or t >= 0.94:
+        return False
+    qx = ax + t * vx
+    qy = ay + t * vy
+    return math.hypot(px - qx, py - qy) < radius
+
+
+def _segments_overlap(a1, a2, b1, b2, dist_tol=_EDGE_OVERLAP_DIST, min_len=_EDGE_OVERLAP_MIN_LEN):
+    """True if two segments are nearly collinear and overlap in interior length."""
+    va = (a2[0] - a1[0], a2[1] - a1[1])
+    vb = (b2[0] - b1[0], b2[1] - b1[1])
+    la = math.hypot(*va)
+    lb = math.hypot(*vb)
+    if la < 1e-12 or lb < 1e-12:
+        return False
+    if abs(va[0] * vb[1] - va[1] * vb[0]) / (la * lb) > 0.08:
+        return False
+    dist = abs(va[0] * (b1[1] - a1[1]) - va[1] * (b1[0] - a1[0])) / la
+    if dist > dist_tol:
+        return False
+
+    def proj(p):
+        return ((p[0] - a1[0]) * va[0] + (p[1] - a1[1]) * va[1]) / la
+
+    pa1, pa2 = 0.0, la
+    pb1, pb2 = proj(b1), proj(b2)
+    if pb1 > pb2:
+        pb1, pb2 = pb2, pb1
+    overlap = min(max(pa1, pa2), pb2) - max(min(pa1, pa2), pb1)
+    share_vertex = a1 == b1 or a1 == b2 or a2 == b1 or a2 == b2
+    if share_vertex:
+        return overlap > min_len
+    return overlap > min_len
+
+
+def _positions_from_order(order_by_level, max_level):
+    pos = {}
+    for level in range(max_level + 1):
+        nodes_at_level = order_by_level.get(level, [])
+        n = len(nodes_at_level)
+        if n == 0:
+            continue
+        for i, node in enumerate(nodes_at_level):
+            x = (i - (n - 1) / 2) * _LEVEL_X_GAP
+            pos[node] = (x, float(level))
+    return pos
+
+
+def _layout_cost(G, pos):
+    """Score a placement: crossings plus high penalties for node hits and overlaps."""
+    nodes = [n for n in G.nodes() if n in pos]
+    edges = [(u, v) for u, v in G.edges() if u in pos and v in pos]
+    cost = 0.0
+
+    for i, a in enumerate(nodes):
+        pa = pos[a]
+        for b in nodes[i + 1 :]:
+            pb = pos[b]
+            d = math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+            if d < _NODE_MIN_DIST:
+                cost += _NODE_OVERLAP_PENALTY
+
+    for u, v in edges:
+        pu, pv = pos[u], pos[v]
+        y0, y1 = pu[1], pv[1]
+        lo, hi = (y0, y1) if y0 < y1 else (y1, y0)
+        for n in nodes:
+            if n == u or n == v:
                 continue
-            if (x1 < x2) != (y1 < y2):
-                c += 1
-    return c
+            pn = pos[n]
+            if not (lo < pn[1] < hi):
+                continue
+            if _point_hits_segment(pn, pu, pv):
+                cost += _NODE_HIT_PENALTY
+
+    for i, (u1, v1) in enumerate(edges):
+        p1, p2 = pos[u1], pos[v1]
+        for u2, v2 in edges[i + 1 :]:
+            q1, q2 = pos[u2], pos[v2]
+            if _proper_segment_intersect(p1, p2, q1, q2):
+                cost += _CROSSING_PENALTY
+            if _segments_overlap(p1, p2, q1, q2):
+                cost += _EDGE_OVERLAP_PENALTY
+    return cost
 
 
-def _total_adjacent_crossings(G, levels, order_by_level, max_level):
-    t = 0
-    for lev in range(max_level):
-        t += _crossings_between_layers(
-            G, levels, order_by_level[lev], order_by_level[lev + 1], lev, lev + 1
-        )
-    return t
+def _real_positions(order_by_level, max_level, dummies):
+    pos = _positions_from_order(order_by_level, max_level)
+    if dummies:
+        pos = {n: xy for n, xy in pos.items() if n not in dummies}
+    return pos
 
 
-def _barycenter_refine_orders(G, levels, level_groups, max_level, iterations=24):
+def _order_cost(G, order_by_level, max_level, dummies=frozenset()):
+    return _layout_cost(G, _real_positions(order_by_level, max_level, dummies))
+
+
+def _copy_order(order):
+    return {lev: list(nodes) for lev, nodes in order.items()}
+
+
+def _with_dummies(G, levels):
+    """Insert dummy vertices on intermediate ranks so long edges occupy x-slots."""
+    H = nx.DiGraph()
+    H.add_nodes_from(G.nodes())
+    dummy_levels = dict(levels)
+    dummies = set()
+    dummy_id = 0
+    for u, v in G.edges():
+        lu, lv = levels[u], levels[v]
+        if lu > lv:
+            u, v = v, u
+            lu, lv = lv, lu
+        if lv - lu <= 1:
+            H.add_edge(u, v)
+            continue
+        prev = u
+        for y in range(lu + 1, lv):
+            d = ("_dummy", dummy_id)
+            dummy_id += 1
+            dummies.add(d)
+            dummy_levels[d] = y
+            H.add_node(d)
+            H.add_edge(prev, d)
+            prev = d
+        H.add_edge(prev, v)
+    return H, dummy_levels, dummies
+
+
+def _barycenter_refine_orders(
+    G, levels, level_groups, max_level, score_graph=None, dummies=None, iterations=24
+):
     """
-    Order nodes within each level to reduce crossings (barycenter heuristic),
+    Order nodes within each level to reduce layout cost (barycenter heuristic),
     trying natural and reversed initial orders and keeping the better result.
     """
+    score_graph = G if score_graph is None else score_graph
+    dummies = frozenset() if dummies is None else frozenset(dummies)
     if max_level <= 0:
         return {
             0: sorted(level_groups.get(0, []), key=_node_sort_key),
         }
 
     best_order = None
-    best_crossings = None
+    best_cost = None
 
     for reverse_initial in (False, True):
         order = {}
@@ -139,39 +279,113 @@ def _barycenter_refine_orders(G, levels, level_groups, max_level, iterations=24)
 
                 order[lev].sort(key=key_up)
 
-        crossings = _total_adjacent_crossings(G, levels, order, max_level)
-        if best_crossings is None or crossings < best_crossings:
-            best_crossings = crossings
-            best_order = {lev: list(nodes) for lev, nodes in order.items()}
+            cost = _order_cost(score_graph, order, max_level, dummies)
+            if best_cost is None or cost < best_cost:
+                best_cost = cost
+                best_order = _copy_order(order)
 
-    return best_order
+        cost = _order_cost(score_graph, order, max_level, dummies)
+        if best_cost is None or cost < best_cost:
+            best_cost = cost
+            best_order = _copy_order(order)
+
+    return _improve_order_by_swaps(
+        score_graph, best_order, max_level, best_cost, dummies=dummies
+    )
 
 
-# Helper function to create hierarchical layout for Hasse diagram
+def _improve_order_by_swaps(G, order, max_level, current_cost, max_rounds=40, dummies=frozenset()):
+    """Adjacent swaps on each level, accepting moves that lower the layout cost."""
+    order = _copy_order(order)
+    cost = (
+        current_cost
+        if current_cost is not None
+        else _order_cost(G, order, max_level, dummies)
+    )
+    for _ in range(max_rounds):
+        improved = False
+        for lev in range(max_level + 1):
+            seq = order[lev]
+            for i in range(len(seq) - 1):
+                seq[i], seq[i + 1] = seq[i + 1], seq[i]
+                new_cost = _order_cost(G, order, max_level, dummies)
+                if new_cost < cost:
+                    cost = new_cost
+                    improved = True
+                else:
+                    seq[i], seq[i + 1] = seq[i + 1], seq[i]
+        if not improved:
+            break
+    return order
+
+
+def _nudge_positions(G, pos, order_by_level, max_level, steps=13, passes=8):
+    """Shift nodes horizontally, keeping order, to dodge node hits and overlaps."""
+    pos = {n: (float(xy[0]), float(xy[1])) for n, xy in pos.items()}
+    best = _layout_cost(G, pos)
+    if best == 0:
+        return pos
+    extra = 2.0 * _LEVEL_X_GAP
+    for _ in range(passes):
+        improved = False
+        for lev in range(max_level + 1):
+            seq = [n for n in order_by_level.get(lev, []) if n in pos]
+            if not seq:
+                continue
+            xs = [pos[n][0] for n in seq]
+            n = len(seq)
+            min_sep = _NODE_MIN_DIST
+            for i, node in enumerate(seq):
+                lo = xs[i - 1] + min_sep if i else xs[i] - extra
+                hi = xs[i + 1] - min_sep if i + 1 < n else xs[i] + extra
+                if hi <= lo:
+                    continue
+                y = pos[node][1]
+                local_best_x = xs[i]
+                for s in range(steps):
+                    x = lo + (hi - lo) * s / (steps - 1) if steps > 1 else xs[i]
+                    pos[node] = (x, y)
+                    c = _layout_cost(G, pos)
+                    if c < best:
+                        best = c
+                        local_best_x = x
+                        improved = True
+                pos[node] = (local_best_x, y)
+                xs[i] = local_best_x
+                if best == 0:
+                    return pos
+        if not improved:
+            break
+    return pos
+
+
 def hasse_layout(G):
     """Create a hierarchical layout suitable for Hasse diagrams (crossing reduction)."""
     levels = compute_levels(G)
     if not levels:
         return nx.spring_layout(G)
 
+    layered, layered_levels, dummies = _with_dummies(G, levels)
     level_groups = {}
-    for node, level in levels.items():
+    for node, level in layered_levels.items():
         level_groups.setdefault(level, []).append(node)
 
-    max_level = max(levels.values())
-    order_by_level = _barycenter_refine_orders(G, levels, level_groups, max_level)
+    max_level = max(layered_levels.values())
+    order_by_level = _barycenter_refine_orders(
+        layered,
+        layered_levels,
+        level_groups,
+        max_level,
+        score_graph=G,
+        dummies=dummies,
+    )
+    pos = _real_positions(order_by_level, max_level, dummies)
+    real_order = {
+        lev: [n for n in nodes if n not in dummies]
+        for lev, nodes in order_by_level.items()
+    }
+    return _nudge_positions(G, pos, real_order, max_level)
 
-    pos = {}
-    for level in range(max_level + 1):
-        nodes_at_level = order_by_level.get(level, [])
-        num_nodes = len(nodes_at_level)
-        if num_nodes > 0:
-            for i, node in enumerate(nodes_at_level):
-                x = (i - (num_nodes - 1) / 2) / max(num_nodes, 1) * 2
-                y = level
-                pos[node] = (x, y)
-
-    return pos
 
 def _terminal_status(msg: str, *, stream=None) -> None:
     """Print msg on one terminal line, replacing the previous status line."""

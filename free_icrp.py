@@ -297,19 +297,42 @@ async def _drain_subprocess_transports() -> None:
         await asyncio.sleep(0.05)
 
 
-def _run_asyncio(coro: Any) -> None:
-    """Like ``asyncio.run``, but lets Windows subprocess transports close first."""
+def _run_asyncio(coro: Any) -> bool:
+    """Like ``asyncio.run``, but lets Windows subprocess transports close first.
+
+    Returns True if *coro* finished, False if it was stopped by Ctrl+C.
+
+    KeyboardInterrupt must cancel the task and wait for it: otherwise the
+    coroutine is abandoned, its ``finally`` runs only during interpreter
+    shutdown, and PDF generation dies with ``sys.meta_path is None``.
+    """
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     loop = asyncio.new_event_loop()
+    completed = False
     try:
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(coro)
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        if hasattr(loop, "shutdown_default_executor"):
-            loop.run_until_complete(loop.shutdown_default_executor())
-        gc.collect()
-        loop.run_until_complete(asyncio.sleep(0.1))
+        task = loop.create_task(coro)
+        try:
+            loop.run_until_complete(task)
+            completed = True
+        except KeyboardInterrupt:
+            print("\nInterrupted — stopping solvers...", flush=True)
+            if not task.done():
+                task.cancel()
+                try:
+                    loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+                except KeyboardInterrupt:
+                    pass
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            if hasattr(loop, "shutdown_default_executor"):
+                loop.run_until_complete(loop.shutdown_default_executor())
+            gc.collect()
+            loop.run_until_complete(asyncio.sleep(0.1))
+        except KeyboardInterrupt:
+            pass
+        return completed
     finally:
         asyncio.set_event_loop(None)
         loop.close()
@@ -509,6 +532,8 @@ if __name__ == "__main__":
     # m4 = Mace4(options=Mace4CliOptions(max_seconds=10,max_models=1))
     # p9 = Prover9(options=Prover9CliOptions(max_seconds=10))
     axioms = [str(line) for line in icrp_axioms.split("\n")]
+    # manually add some difficult theorems
+    axioms.append("((x \\ x) \\ e) <= (((x \\ e) \\ (x \\ e)) \\ e).")
     m4_timeout = args.timeout
     m4_options = Mace4CliOptions(max_seconds=m4_timeout,max_models=1)
     p9_timeout = args.timeout
@@ -547,11 +572,11 @@ if __name__ == "__main__":
         axioms_file.flush()
 
     def save_unknown(formula: str) -> None:
-        print("  undecided")
+        print(f"  {formula} undecided")
         unknowns.append(formula)
         unknown_file.write(formula + "\n")
         unknown_file.flush()
-
+    
     async def classify() -> None:
         try:
             for left, right in icombinations(terms(operations, variables, max_level=args.max_level, progress=True), 2):
@@ -603,7 +628,15 @@ if __name__ == "__main__":
         finally:
             axioms_file.close()
             unknown_file.close()
-            write_free_icrp_pdf(equivalence_classes, unknowns, args.output)
 
-    _run_asyncio(classify())
+    try:
+        completed = _run_asyncio(classify())
+    finally:
+        if not axioms_file.closed:
+            axioms_file.close()
+        if not unknown_file.closed:
+            unknown_file.close()
+        write_free_icrp_pdf(equivalence_classes, unknowns, args.output)
+    if not completed:
+        sys.exit(130)
 
