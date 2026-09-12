@@ -3,7 +3,7 @@ import gc
 import itertools
 import sys
 import networkx as nx
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from enum import Enum
 from typing import Any
 from axioms import icrp_axioms, rsi_crp_axioms
@@ -40,46 +40,52 @@ class Operation:
         elif self.type == OperationType.POSTFIX:
             return f"({','.join(arguments)}){self.symbol}"
 
-# Generate all terms up to a given level
-def terms(operations: list[Operation], variables: list[str], max_level: int = 10, progress: bool = False) -> Iterator[str]:
-    # Base case: variables
-    ts = set[str]()
-    for variable in variables:
-        ts.add(variable)
-        yield variable
-    # Base case: constants
+def expand_terms(operations: list[Operation], current: Sequence[str]) -> list[str]:
+    """Apply each operation once to *current*, returning newly formed terms.
+
+    Commutative and idempotent operations use unordered argument tuples, matching
+    ``terms``. The input sequence is not modified.
+    """
+    ts = list(current)
+    seen = set(ts)
+    new_terms: list[str] = []
+    for operation in operations:
+        if operation.arity <= 0:
+            continue
+        if operation.commutative and operation.idempotent:
+            arg_iter: Iterable[tuple[str, ...]] = itertools.combinations(ts, operation.arity)
+        elif operation.commutative:
+            arg_iter = itertools.combinations_with_replacement(ts, operation.arity)
+        else:
+            arg_iter = itertools.product(ts, repeat=operation.arity)
+        for args in arg_iter:
+            new_term = operation(args)
+            if new_term not in seen:
+                seen.add(new_term)
+                new_terms.append(new_term)
+    return new_terms
+
+
+def seed_terms(operations: list[Operation], variables: Sequence[str]) -> list[str]:
+    """Variables followed by constant (arity-0) operation symbols."""
+    ts = list(variables)
     for operation in operations:
         if operation.arity == 0:
-            ts.add(operation.symbol)
-            yield operation.symbol
+            ts.append(operation.symbol)
+    return ts
 
-    # Recursive case: operations
+
+# Generate all terms up to a given level
+def terms(operations: list[Operation], variables: list[str], max_level: int = 10, progress: bool = False) -> Iterator[str]:
+    ts = seed_terms(operations, variables)
+    yield from ts
     level = 0
     if progress:
         print(f"Level {level}: {len(ts)} terms")
     while level < max_level:
-        new_terms = set[str]()
-        for operation in operations:
-            if operation.arity > 0:
-                if operation.commutative and operation.idempotent:
-                    for args in itertools.combinations(ts, operation.arity):
-                        new_term = operation(args)
-                        if new_term not in ts:
-                            new_terms.add(new_term)
-                            yield new_term
-                elif operation.commutative:
-                    for args in itertools.combinations_with_replacement(ts, operation.arity):
-                        new_term = operation(args)
-                        if new_term not in ts:
-                            new_terms.add(new_term)
-                            yield new_term
-                else:
-                    for args in itertools.product(ts, repeat=operation.arity):
-                        new_term = operation(args)
-                        if new_term not in ts:
-                            new_terms.add(new_term)
-                            yield new_term
-        ts.update(new_terms)
+        new_terms = expand_terms(operations, ts)
+        ts.extend(new_terms)
+        yield from new_terms
         level += 1
         if progress:
             print(f"Level {level}: {len(ts)} terms")
@@ -297,6 +303,22 @@ async def _drain_subprocess_transports() -> None:
         await asyncio.sleep(0.05)
 
 
+def _is_closed_pipe_error(exc: BaseException | None) -> bool:
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+        return True
+    return isinstance(exc, ValueError) and "closed pipe" in str(exc)
+
+
+def _ignore_closed_pipe_errors(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+    """Drop Windows pipe errors left behind when a solver is killed mid-stdin-write."""
+    if _is_closed_pipe_error(context.get("exception")):
+        return
+    message = str(context.get("message", ""))
+    if "unclosed transport" in message or "pipe has been ended" in message.lower():
+        return
+    loop.default_exception_handler(context)
+
+
 def _run_asyncio(coro: Any) -> bool:
     """Like ``asyncio.run``, but lets Windows subprocess transports close first.
 
@@ -312,6 +334,7 @@ def _run_asyncio(coro: Any) -> bool:
     completed = False
     try:
         asyncio.set_event_loop(loop)
+        loop.set_exception_handler(_ignore_closed_pipe_errors)
         task = loop.create_task(coro)
         try:
             loop.run_until_complete(task)
@@ -511,6 +534,107 @@ def write_free_icrp_pdf(
     print(f"PDF saved to {pdf_path}")
 
 
+async def classify_term_order(
+    operations: list[Operation],
+    variables: Sequence[str],
+    max_level: int,
+    axioms: list[str],
+    equivalence_classes: TermPartialOrder,
+    mace4: Mace4,
+    prover9: Prover9,
+    save_axiom: Callable[[str], None],
+    save_unknown: Callable[[str], None],
+    progress: bool = False,
+) -> None:
+    """Classify the free-algebra order by expanding a pruned pool of representatives.
+
+    At each level, new terms are built only from current class representatives.
+    When two terms are proved equal, the longer one (the absorbed class name) is
+    dropped from the pool so it is not used to generate still-larger terms.
+    If a level produces no new representatives, the pool is closed and the
+    search stops. ``terms`` and ``icombinations`` are left unchanged for other
+    callers.
+    """
+
+    def live(terms_in: Sequence[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for term in terms_in:
+            representative = equivalence_classes.find(term)
+            if representative not in seen:
+                seen.add(representative)
+                out.append(representative)
+        return out
+
+    async def classify_pair(left: str, right: str) -> None:
+        left = equivalence_classes.find(left)
+        right = equivalence_classes.find(right)
+        if left == right or equivalence_classes.known_unequal(left, right):
+            return
+        po = PartialOrderVerdict.UNKNOWN
+        theory = Theory(assumptions=axioms, goals=[f"{left} = {right}."])
+        verdict = await decide(theory.to_theory_text(), mace4, prover9)
+        if verdict is Decision.PROVED:
+            po = PartialOrderVerdict.EQUAL
+        elif verdict is Decision.FALSIFIED:  # not equal in free algebra
+            equivalence_classes.mark_unequal(left, right)
+            theory = Theory(assumptions=axioms, goals=[f"{left} <= {right}."])
+            verdict = await decide(theory.to_theory_text(), mace4, prover9)
+            if verdict is Decision.PROVED:
+                po = PartialOrderVerdict.LESS_THAN
+            elif verdict is Decision.FALSIFIED:  # not less than or equal in free algebra
+                theory = Theory(assumptions=axioms, goals=[f"{right} <= {left}."])
+                verdict = await decide(theory.to_theory_text(), mace4, prover9)
+                if verdict is Decision.PROVED:
+                    po = PartialOrderVerdict.GREATER_THAN
+                elif verdict is Decision.FALSIFIED:  # incomparable in free algebra
+                    po = PartialOrderVerdict.INCOMPARABLE
+                else:
+                    save_unknown(f"{right} <= {left}.")
+            else:
+                save_unknown(f"{left} <= {right}.")
+        else:
+            save_unknown(f"{left} = {right}.")
+        if po is PartialOrderVerdict.EQUAL:
+            save_axiom(f"{left} = {right}.")
+            equivalence_classes.union(left, right)
+        elif po is PartialOrderVerdict.LESS_THAN:
+            save_axiom(f"{left} <= {right}.")
+            equivalence_classes.add_less_than(left, right)
+        elif po is PartialOrderVerdict.GREATER_THAN:
+            save_axiom(f"{right} <= {left}.")
+            equivalence_classes.add_less_than(right, left)
+
+    async def classify_pairs(pairs: Iterable[tuple[str, str]]) -> None:
+        for left, right in pairs:
+            if equivalence_classes.find(left) != left or equivalence_classes.find(right) != right:
+                continue
+            await classify_pair(left, right)
+
+    pool = live(seed_terms(operations, variables))
+    if progress:
+        print(f"Level 0: {len(pool)} terms")
+    await classify_pairs(itertools.combinations(pool, 2))
+    pool = live(pool)
+
+    for level in range(1, max_level + 1):
+        candidates = expand_terms(operations, pool)
+        new_terms = [term for term in candidates if equivalence_classes.find(term) == term]
+        if not new_terms:
+            print(f"No new terms at level {level}; terminating.")
+            return
+        prev = list(pool)
+        await classify_pairs(
+            itertools.chain(
+                itertools.product(new_terms, prev),
+                itertools.combinations(new_terms, 2),
+            )
+        )
+        pool = live(prev + new_terms)
+        if progress:
+            print(f"Level {level}: {len(pool)} terms")
+
+
 if __name__ == "__main__":
     import argparse
     from pathlib import Path
@@ -519,6 +643,20 @@ if __name__ == "__main__":
     parser.add_argument("--max-level", type=int, default=2)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("-o", "--output", type=str, default="output/free_icrp.pdf")
+    parser.add_argument(
+        "--axioms",
+        type=str,
+        default="input/free_icrp_axioms.txt",
+        help="Path to the proven-statements file (default: input/free_icrp_axioms.txt)",
+    )
+    parser.add_argument(
+        "--lookup-only",
+        action="store_true",
+        help=(
+            "Use the axioms file only to restore previously proven equalities "
+            "and inequalities; do not add those statements as theory assumptions"
+        ),
+    )
     args = parser.parse_args()
 
     operations = [
@@ -533,7 +671,25 @@ if __name__ == "__main__":
     # p9 = Prover9(options=Prover9CliOptions(max_seconds=10))
     axioms = [str(line) for line in icrp_axioms.split("\n")]
     # manually add some difficult theorems
-    axioms.append("((x \\ x) \\ e) <= (((x \\ e) \\ (x \\ e)) \\ e).")
+    axioms.extend([
+        "((x \\ x) \\ e) <= (((x \\ e) \\ (x \\ e)) \\ e).",
+        "((x \\ e) \\ x) * (x \\ x) = (x \\ e) \\ x.",
+        "(x \\ y) * (y \\ z) <= x \\ z.",
+        "x <= y \\ (x * y).",
+        "((x \\ e) \\ (x * e)) = (((x \\ e) \\ e) * ((x \\ e) \\ x)).",
+        "((x \\ e) \\ x) = (((x \\ e) \\ e) * ((x \\ e) \\ x)).",
+        "((e \\ (x * e)) * (x \\ (x \\ e)))  =  x * (x \\ (x \\ e)).",
+        "x * (x \\ (x \\ e)) =  x * ((x * x) \\ e).",
+        "x * ((x * x) \\ e)  =  x * (x \\ e).",
+        "((e \\ x) \\ (e * x)) * ((e \\ e) \\ (e \\ e)) = (x \\ x) * (e \\ e).",
+        "(x \\ x) * (e \\ e) = (x \\ x).",
+        "((x \\ x) \\ e) = (((x \\ e) \\ e) * (x \\ e)).",
+        "((e \\ (x * e)) * (x \\ (x \\ e))) = (x * (x \\ e)).",
+        "(((e \\ x) \\ (e * x)) * ((e \\ e) \\ (e \\ e))) = (x \\ x).",
+        "(((x \\ e) \\ e) * ((x \\ e) \\ x)) = ((x \\ e) \\ x).",
+        "((x \\ e) \\ x) = (((x \\ e) \\ (e \\ x)) * ((x \\ x) \\ (x \\ x))).",
+        "(((x \\ e) \\ e) * x) = (x * ((x \\ e) \\ e)).",
+        ])
     m4_timeout = args.timeout
     m4_options = Mace4CliOptions(max_seconds=m4_timeout,max_models=1)
     p9_timeout = args.timeout
@@ -545,7 +701,8 @@ if __name__ == "__main__":
 
     input_dir = Path("input")
     input_dir.mkdir(parents=True, exist_ok=True)
-    axioms_path = input_dir / "free_icrp_axioms.txt"
+    axioms_path = Path(args.axioms)
+    axioms_path.parent.mkdir(parents=True, exist_ok=True)
     unknown_path = input_dir / "free_icrp_unknown.txt"
 
     if axioms_path.exists():
@@ -556,11 +713,14 @@ if __name__ == "__main__":
                 continue
             if not formula.endswith("."):
                 formula += "."
-            if formula not in axioms:
+            if not args.lookup_only and formula not in axioms:
                 axioms.append(formula)
             _apply_proven_formula(formula, equivalence_classes)
             loaded += 1
-        print(f"Loaded {loaded} proven statements from {axioms_path}")
+        if args.lookup_only:
+            print(f"Looked up {loaded} proven statements from {axioms_path} (not added as axioms)")
+        else:
+            print(f"Loaded {loaded} proven statements from {axioms_path}")
 
     axioms_file = axioms_path.open("a", encoding="utf-8")
     unknown_file = unknown_path.open("w", encoding="utf-8")
@@ -579,51 +739,18 @@ if __name__ == "__main__":
     
     async def classify() -> None:
         try:
-            for left, right in icombinations(terms(operations, variables, max_level=args.max_level, progress=True), 2):
-                po = PartialOrderVerdict.UNKNOWN
-                if equivalence_classes.same(left, right):
-                    continue
-                if equivalence_classes.known_unequal(left, right):
-                    continue
-                # decide equality
-                theory = Theory(assumptions=axioms, goals=[f"{left} = {right}."])
-                verdict = await decide(theory.to_theory_text(), mace4, prover9)
-                if verdict is Decision.PROVED:
-                    po = PartialOrderVerdict.EQUAL
-                elif verdict is Decision.FALSIFIED: # not equal in free algebra
-                    equivalence_classes.mark_unequal(left, right)
-                    # decide ordering
-                    theory = Theory(assumptions=axioms, goals=[f"{left} <= {right}."])
-                    verdict = await decide(theory.to_theory_text(), mace4, prover9)
-                    if verdict is Decision.PROVED:
-                        po = PartialOrderVerdict.LESS_THAN
-                    elif verdict is Decision.FALSIFIED: # not less than or equal in free algebra
-                        theory = Theory(assumptions=axioms, goals=[f"{right} <= {left}."])
-                        verdict = await decide(theory.to_theory_text(), mace4, prover9)
-                        if verdict is Decision.PROVED:
-                            po = PartialOrderVerdict.GREATER_THAN
-                        elif verdict is Decision.FALSIFIED: # not greater than or less than or equal in free algebra
-                            po = PartialOrderVerdict.INCOMPARABLE
-                        else:
-                            save_unknown(f"{right} <= {left}.")
-                    else:
-                        save_unknown(f"{left} <= {right}.")
-                else:
-                    save_unknown(f"{left} = {right}.")
-                if po is PartialOrderVerdict.EQUAL:
-                    save_axiom(f"{left} = {right}.")
-                    equivalence_classes.union(left, right)
-                elif po is PartialOrderVerdict.LESS_THAN:
-                    save_axiom(f"{left} <= {right}.")
-                    equivalence_classes.add_less_than(left, right)
-                elif po is PartialOrderVerdict.GREATER_THAN:
-                    save_axiom(f"{right} <= {left}.")
-                    equivalence_classes.add_less_than(right, left)
-                elif po is PartialOrderVerdict.INCOMPARABLE:
-                    pass
-                else:
-                    pass
-
+            await classify_term_order(
+                operations,
+                variables,
+                max_level=args.max_level,
+                axioms=axioms,
+                equivalence_classes=equivalence_classes,
+                mace4=mace4,
+                prover9=prover9,
+                save_axiom=save_axiom,
+                save_unknown=save_unknown,
+                progress=True,
+            )
             await _drain_subprocess_transports()
         finally:
             axioms_file.close()
