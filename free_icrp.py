@@ -157,8 +157,15 @@ class TermEquivalence:
             self._birth[x] = self._next_birth
             self._next_birth += 1
 
+    def __contains__(self, x: object) -> bool:
+        return isinstance(x, str) and x in self._parent
+
     def _choice_key(self, x: str) -> tuple[int, int, str]:
         return (len(x), self._birth[x], x)
+
+    def representatives(self) -> list[str]:
+        """Canonical class names, shortest first (then insertion order)."""
+        return sorted({self.find(x) for x in self._parent}, key=self._choice_key)
 
     def find(self, x: str) -> str:
         self.add(x)
@@ -429,7 +436,74 @@ def _apply_proven_formula(formula: str, order: TermPartialOrder) -> None:
         order.union(left.strip(), right.strip())
 
 
-def _draw_term_hasse(ax, graph: nx.DiGraph, title: str = "") -> None:
+def _known_operation_result(
+    order: TermEquivalence,
+    operation: Operation,
+    left: str,
+    right: str,
+) -> str | None:
+    """Return the known representative of ``operation(left, right)``, if any.
+
+    Does not add new terms to *order*. Idempotence fills the diagonal; a
+    commutative operation also looks up the swapped argument string.
+    """
+    if operation.arity != 2:
+        raise ValueError(f"{operation.symbol} is not binary")
+    if left == right and operation.idempotent:
+        return left if left in order else None
+    candidates = [operation((left, right))]
+    if operation.commutative and left != right:
+        candidates.append(operation((right, left)))
+    for term in candidates:
+        if term in order:
+            return order.find(term)
+    return None
+
+
+def _operation_table_cells(
+    order: TermEquivalence,
+    operation: Operation,
+    reps: Sequence[str],
+) -> tuple[list[list[str]], int]:
+    """Cayley table of class indices; ``?`` marks products not yet identified.
+
+    Returns the cell grid and the number of next-layer terms ``expand_terms``
+    would still generate for this operation (unknown combinations, counting
+    each commutative pair once).
+    """
+    index = {rep: str(i + 1) for i, rep in enumerate(reps)}
+    cells: list[list[str]] = []
+    for left in reps:
+        row: list[str] = []
+        for right in reps:
+            result = _known_operation_result(order, operation, left, right)
+            row.append(index.get(result, "?") if result is not None else "?")
+        cells.append(row)
+
+    next_layer = 0
+    seen = set(reps)
+    if operation.commutative and operation.idempotent:
+        arg_iter: Iterable[tuple[str, ...]] = itertools.combinations(reps, operation.arity)
+    elif operation.commutative:
+        arg_iter = itertools.combinations_with_replacement(reps, operation.arity)
+    else:
+        arg_iter = itertools.product(reps, repeat=operation.arity)
+    for args in arg_iter:
+        term = operation(args)
+        if term in seen:
+            continue
+        seen.add(term)
+        if term not in order:
+            next_layer += 1
+    return cells, next_layer
+
+
+def _draw_term_hasse(
+    ax,
+    graph: nx.DiGraph,
+    title: str = "",
+    labels: dict[str, str] | None = None,
+) -> None:
     """Draw a Hasse diagram of term representatives using the project layout."""
     from draw_orders import hasse_layout
 
@@ -437,7 +511,8 @@ def _draw_term_hasse(ax, graph: nx.DiGraph, title: str = "") -> None:
         ax.set_title(title, fontsize=10)
         ax.axis("off")
         return
-    labels = {n: str(n) for n in graph.nodes()}
+    if labels is None:
+        labels = {n: str(n) for n in graph.nodes()}
     max_len = max(len(lab) for lab in labels.values())
     node_size = max(900, min(2800, 110 * max_len))
     font_size = 8 if max_len > 12 else 10
@@ -460,19 +535,120 @@ def _draw_term_hasse(ax, graph: nx.DiGraph, title: str = "") -> None:
     ax.axis("off")
 
 
+def _add_operation_table_page(
+    pdf,
+    order: TermEquivalence,
+    operation: Operation,
+    reps: Sequence[str],
+    fig_width: float,
+) -> None:
+    """Write one Cayley-table page for a binary operation on *reps*."""
+    import matplotlib.pyplot as plt
+
+    n = len(reps)
+    if n == 0:
+        return
+    cells, next_layer = _operation_table_cells(order, operation, reps)
+    labels = [str(i + 1) for i in range(n)]
+    max_term = max((len(t) for t in reps), default=0)
+    n_legend_cols = 2 if n > 8 and max_term <= 24 else 1
+    legend_rows = (n + n_legend_cols - 1) // n_legend_cols
+    legend_height = max(1.4, min(12.0, 0.28 * legend_rows))
+    table_height = max(4.5, min(18.0, 0.42 * n + 1.2))
+    page_width = max(fig_width, 3.2 + 0.48 * n, 4.0 + 0.09 * max_term * n_legend_cols)
+    fig_height = 1.1 + legend_height + table_height
+
+    fig = plt.figure(figsize=(page_width, fig_height), layout="constrained")
+    gs = fig.add_gridspec(2, 1, height_ratios=[legend_height, table_height])
+    ax_legend = fig.add_subplot(gs[0])
+    ax_table = fig.add_subplot(gs[1])
+    ax_legend.axis("off")
+    ax_table.axis("off")
+
+    mid = legend_rows
+    legend_cols: list[str] = []
+    for col in range(n_legend_cols):
+        lines = [f"{i + 1:>2}. {reps[i]}" for i in range(col * mid, min(n, (col + 1) * mid))]
+        legend_cols.append("\n".join(lines))
+    x_positions = [0.0] if n_legend_cols == 1 else [0.0, 0.52]
+    for x, body in zip(x_positions, legend_cols):
+        ax_legend.text(
+            x,
+            1.0,
+            body,
+            transform=ax_legend.transAxes,
+            va="top",
+            ha="left",
+            fontsize=8,
+            family="monospace",
+            linespacing=1.3,
+        )
+    ax_legend.set_title("Class representatives", fontsize=10, loc="left")
+
+    table = ax_table.table(
+        cellText=cells,
+        rowLabels=labels,
+        colLabels=labels,
+        loc="center",
+        cellLoc="center",
+    )
+    table.auto_set_font_size(False)
+    fontsize = 9 if n <= 12 else (8 if n <= 18 else 6)
+    table.set_fontsize(fontsize)
+    table.scale(1.0, 1.35)
+    header_color = "#eceff1"
+    unknown_color = "#ffe082"
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor("#b0bec5")
+        if row == 0 or col == -1:
+            cell.set_facecolor(header_color)
+            cell.get_text().set_fontweight("bold")
+            continue
+        if cells[row - 1][col] == "?":
+            cell.set_facecolor(unknown_color)
+    if (0, -1) in table.get_celld():
+        table[0, -1].get_text().set_text(operation.symbol)
+        table[0, -1].get_text().set_fontweight("bold")
+    symbol = operation.symbol
+    ax_table.set_title(
+        f"row {symbol} column; "
+        f"{next_layer} new term{'s' if next_layer != 1 else ''} at the next layer",
+        fontsize=10,
+        pad=8,
+    )
+    fig.suptitle(
+        f"Free ICRP — known {symbol} identities  (? = not yet identified)",
+        fontsize=14,
+        fontweight="bold",
+    )
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
+
+
 def write_free_icrp_pdf(
     order: TermPartialOrder,
     unknowns: Sequence[str],
     pdf_filename: str,
+    operations: Sequence[Operation] | None = None,
 ) -> None:
-    """Draw the known Hasse diagram with unknown identities listed below it."""
+    """Draw the known Hasse diagram, operation tables, and unknown identities."""
     import matplotlib.backends.backend_pdf
     import matplotlib.pyplot as plt
     from pathlib import Path
 
+    if operations is None:
+        operations = [
+            Operation(2, OperationType.INFIX, "*", commutative=True, idempotent=True),
+            Operation(2, OperationType.INFIX, "\\"),
+        ]
+
     pdf_path = Path(pdf_filename)
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
+    reps = order.representatives()
+    hasse_labels = {n: str(n) for n in order.hasse.nodes()}
+    for i, rep in enumerate(reps):
+        hasse_labels[rep] = f"{i + 1}: {rep}"
     unknown_lines = list(unknowns)
     n_nodes = order.hasse.number_of_nodes()
     fig_width = max(10, min(20, 6 + n_nodes * 0.45))
@@ -487,7 +663,12 @@ def write_free_icrp_pdf(
     ax_graph = fig.add_subplot(gs[0])
     ax_text = fig.add_subplot(gs[1])
 
-    _draw_term_hasse(ax_graph, order.hasse, title="Known partial order")
+    _draw_term_hasse(
+        ax_graph,
+        order.hasse,
+        title="Known partial order",
+        labels=hasse_labels,
+    )
 
     ax_text.axis("off")
     ax_text.set_title("Unknown identities", fontsize=10, loc="left")
@@ -508,6 +689,10 @@ def write_free_icrp_pdf(
     pdf = matplotlib.backends.backend_pdf.PdfPages(filename=str(pdf_path))
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
+
+    for operation in operations:
+        if operation.arity == 2:
+            _add_operation_table_page(pdf, order, operation, reps, fig_width)
 
     while remaining_unknowns:
         chunk = remaining_unknowns[:50]
@@ -673,22 +858,24 @@ if __name__ == "__main__":
     # manually add some difficult theorems
     axioms.extend([
         "((x \\ x) \\ e) <= (((x \\ e) \\ (x \\ e)) \\ e).",
-        "((x \\ e) \\ x) * (x \\ x) = (x \\ e) \\ x.",
+        # "((x \\ e) \\ x) * (x \\ x) = (x \\ e) \\ x.",
         "(x \\ y) * (y \\ z) <= x \\ z.",
         "x <= y \\ (x * y).",
-        "((x \\ e) \\ (x * e)) = (((x \\ e) \\ e) * ((x \\ e) \\ x)).",
-        "((x \\ e) \\ x) = (((x \\ e) \\ e) * ((x \\ e) \\ x)).",
-        "((e \\ (x * e)) * (x \\ (x \\ e)))  =  x * (x \\ (x \\ e)).",
+        # "((x \\ e) \\ (x * e)) = (((x \\ e) \\ e) * ((x \\ e) \\ x)).",
+        # "((x \\ e) \\ x) = (((x \\ e) \\ e) * ((x \\ e) \\ x)).",
+        # "((e \\ (x * e)) * (x \\ (x \\ e)))  =  x * (x \\ (x \\ e)).",
         "x * (x \\ (x \\ e)) =  x * ((x * x) \\ e).",
         "x * ((x * x) \\ e)  =  x * (x \\ e).",
-        "((e \\ x) \\ (e * x)) * ((e \\ e) \\ (e \\ e)) = (x \\ x) * (e \\ e).",
+        # "((e \\ x) \\ (e * x)) * ((e \\ e) \\ (e \\ e)) = (x \\ x) * (e \\ e).",
         "(x \\ x) * (e \\ e) = (x \\ x).",
         "((x \\ x) \\ e) = (((x \\ e) \\ e) * (x \\ e)).",
-        "((e \\ (x * e)) * (x \\ (x \\ e))) = (x * (x \\ e)).",
-        "(((e \\ x) \\ (e * x)) * ((e \\ e) \\ (e \\ e))) = (x \\ x).",
+        # "((e \\ (x * e)) * (x \\ (x \\ e))) = (x * (x \\ e)).",
+        # "(((e \\ x) \\ (e * x)) * ((e \\ e) \\ (e \\ e))) = (x \\ x).",
         "(((x \\ e) \\ e) * ((x \\ e) \\ x)) = ((x \\ e) \\ x).",
         "((x \\ e) \\ x) = (((x \\ e) \\ (e \\ x)) * ((x \\ x) \\ (x \\ x))).",
         "(((x \\ e) \\ e) * x) = (x * ((x \\ e) \\ e)).",
+        "(((x \\ x) \\ e) \\ x) = (((x \\ e) \\ e) \\ ((x \\ e) \\ x)).",
+        "(((x \\ e) \\ x) \\ (x \\ x)) = (((x \\ e) \\ e) \\ (x \\ x))."
         ])
     m4_timeout = args.timeout
     m4_options = Mace4CliOptions(max_seconds=m4_timeout,max_models=1)
@@ -763,7 +950,7 @@ if __name__ == "__main__":
             axioms_file.close()
         if not unknown_file.closed:
             unknown_file.close()
-        write_free_icrp_pdf(equivalence_classes, unknowns, args.output)
+        write_free_icrp_pdf(equivalence_classes, unknowns, args.output, operations)
     if not completed:
         sys.exit(130)
 
