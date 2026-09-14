@@ -2,13 +2,15 @@ import asyncio
 import gc
 import itertools
 import sys
-import networkx as nx
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from enum import Enum
 from typing import Any
-from axioms import icrp_axioms, rsi_crp_axioms
-from pyp9m4 import Mace4, Model, Prover9, ProverOutcome, Theory, Stage
+
+import networkx as nx
+from pyp9m4 import Mace4, Model, Prover9, ProverOutcome, Stage, Theory
 from pyp9m4.options import Mace4CliOptions, Prover9CliOptions
+
+from axioms import icrp_axioms, rsi_crp_axioms
 
 
 class OperationType(Enum):
@@ -425,15 +427,60 @@ def _formula_body(formula: str) -> str:
     return formula.strip().removesuffix(".").strip()
 
 
-def _apply_proven_formula(formula: str, order: TermPartialOrder) -> None:
-    """Replay a saved identity or inequality into the running partial order."""
+def _formula_sides(formula: str) -> tuple[str, str, str] | None:
+    """Return ``(op, left, right)`` for a saved ``=`` or ``<=`` formula."""
     body = _formula_body(formula)
     if "<=" in body:
         left, right = body.split("<=", 1)
-        order.add_less_than(left.strip(), right.strip())
-    elif "=" in body:
+        return ("<=", left.strip(), right.strip())
+    if "=" in body:
         left, right = body.split("=", 1)
-        order.union(left.strip(), right.strip())
+        return ("=", left.strip(), right.strip())
+    return None
+
+
+def _apply_proven_formula(formula: str, order: TermPartialOrder) -> None:
+    """Replay a saved identity or inequality into the running partial order."""
+    parsed = _formula_sides(formula)
+    if parsed is None:
+        return
+    op, left, right = parsed
+    if op == "<=":
+        order.add_less_than(left, right)
+    else:
+        order.union(left, right)
+
+
+def _try_apply_pending_lookups(
+    pending: list[str],
+    order: TermPartialOrder,
+) -> int:
+    """Apply stored formulas whose both sides are already present in *order*.
+
+    Formulas that mention a term not yet generated stay in *pending* for later.
+    Replays until a pass applies nothing, since one merge can unlock others.
+    Returns the number of formulas applied in this call.
+    """
+    applied = 0
+    changed = True
+    while changed:
+        changed = False
+        remaining: list[str] = []
+        for formula in pending:
+            parsed = _formula_sides(formula)
+            if parsed is None:
+                continue
+            _, left, right = parsed
+            # Use membership, not find/add: find would insert missing sides.
+            if left not in order or right not in order:
+                remaining.append(formula)
+                continue
+            _apply_proven_formula(formula, order)
+            applied += 1
+            changed = True
+        pending.clear()
+        pending.extend(remaining)
+    return applied
 
 
 def _known_operation_result(
@@ -730,6 +777,7 @@ async def classify_term_order(
     save_axiom: Callable[[str], None],
     save_unknown: Callable[[str], None],
     progress: bool = False,
+    pending_lookup: list[str] | None = None,
 ) -> None:
     """Classify the free-algebra order by expanding a pruned pool of representatives.
 
@@ -739,7 +787,13 @@ async def classify_term_order(
     If a level produces no new representatives, the pool is closed and the
     search stops. ``terms`` and ``icombinations`` are left unchanged for other
     callers.
+
+    If *pending_lookup* is non-empty, stored formulas are applied only once both
+    sides have appeared among generated terms, so obsolete terms from an older
+    axiom file never become Hasse nodes by themselves.
     """
+
+    pending = pending_lookup if pending_lookup is not None else []
 
     def live(terms_in: Sequence[str]) -> list[str]:
         seen: set[str] = set()
@@ -751,10 +805,17 @@ async def classify_term_order(
                 out.append(representative)
         return out
 
+    def apply_lookups() -> None:
+        n = _try_apply_pending_lookups(pending, equivalence_classes)
+        if progress and n:
+            print(f"  Applied {n} looked-up statement{'s' if n != 1 else ''}")
+
     async def classify_pair(left: str, right: str) -> None:
         left = equivalence_classes.find(left)
         right = equivalence_classes.find(right)
         if left == right or equivalence_classes.known_unequal(left, right):
+            return
+        if equivalence_classes.known_less_than(left, right) or equivalence_classes.known_less_than(right, left):
             return
         po = PartialOrderVerdict.UNKNOWN
         theory = Theory(assumptions=axioms, goals=[f"{left} = {right}."])
@@ -797,6 +858,8 @@ async def classify_term_order(
             await classify_pair(left, right)
 
     pool = live(seed_terms(operations, variables))
+    apply_lookups()
+    pool = live(pool)
     if progress:
         print(f"Level 0: {len(pool)} terms")
     await classify_pairs(itertools.combinations(pool, 2))
@@ -804,6 +867,9 @@ async def classify_term_order(
 
     for level in range(1, max_level + 1):
         candidates = expand_terms(operations, pool)
+        for term in candidates:
+            equivalence_classes.add(term)
+        apply_lookups()
         new_terms = [term for term in candidates if equivalence_classes.find(term) == term]
         if not new_terms:
             print(f"No new terms at level {level}; terminating.")
@@ -838,8 +904,9 @@ if __name__ == "__main__":
         "--lookup-only",
         action="store_true",
         help=(
-            "Use the axioms file only to restore previously proven equalities "
-            "and inequalities; do not add those statements as theory assumptions"
+            "Do not add proven statements from the axioms file as theory "
+            "assumptions; use them only to restore the partial order when both "
+            "sides are generated. Append only newly proven formulas."
         ),
     )
     args = parser.parse_args()
@@ -861,6 +928,9 @@ if __name__ == "__main__":
         # "((x \\ e) \\ x) * (x \\ x) = (x \\ e) \\ x.",
         "(x \\ y) * (y \\ z) <= x \\ z.",
         "x <= y \\ (x * y).",
+        "(x <= y)<->((x\\y) = (x\\y)\\(x\\y)).",
+        "((y\\z)\\z)\\z = y\\z.",
+        "x\\(x\\y) = x\\y.",
         # "((x \\ e) \\ (x * e)) = (((x \\ e) \\ e) * ((x \\ e) \\ x)).",
         # "((x \\ e) \\ x) = (((x \\ e) \\ e) * ((x \\ e) \\ x)).",
         # "((e \\ (x * e)) * (x \\ (x \\ e)))  =  x * (x \\ (x \\ e)).",
@@ -892,6 +962,10 @@ if __name__ == "__main__":
     axioms_path.parent.mkdir(parents=True, exist_ok=True)
     unknown_path = input_dir / "free_icrp_unknown.txt"
 
+    # Formulas already on disk: used to avoid re-appending.
+    known_formulas: set[str] = set()
+    pending_lookup: list[str] = []
+
     if axioms_path.exists():
         loaded = 0
         for line in axioms_path.read_text(encoding="utf-8").splitlines():
@@ -900,23 +974,34 @@ if __name__ == "__main__":
                 continue
             if not formula.endswith("."):
                 formula += "."
+            known_formulas.add(formula)
+            loaded += 1
+            pending_lookup.append(formula)
             if not args.lookup_only and formula not in axioms:
                 axioms.append(formula)
-            _apply_proven_formula(formula, equivalence_classes)
-            loaded += 1
         if args.lookup_only:
-            print(f"Looked up {loaded} proven statements from {axioms_path} (not added as axioms)")
+            print(
+                f"Queued {loaded} proven statements from {axioms_path} "
+                f"for lookup when generated (not added as axioms)"
+            )
         else:
-            print(f"Loaded {loaded} proven statements from {axioms_path}")
+            print(
+                f"Queued {loaded} proven statements from {axioms_path} "
+                f"for lookup when generated (also added as axioms)"
+            )
 
     axioms_file = axioms_path.open("a", encoding="utf-8")
     unknown_file = unknown_path.open("w", encoding="utf-8")
     unknowns: list[str] = []
 
     def save_axiom(formula: str) -> None:
-        axioms.append(formula)
-        axioms_file.write(formula + "\n")
-        axioms_file.flush()
+        if formula not in axioms:
+            axioms.append(formula)
+        # Append only formulas that are not already recorded on disk.
+        if formula not in known_formulas:
+            known_formulas.add(formula)
+            axioms_file.write(formula + "\n")
+            axioms_file.flush()
 
     def save_unknown(formula: str) -> None:
         print(f"  {formula} undecided")
@@ -937,11 +1022,17 @@ if __name__ == "__main__":
                 save_axiom=save_axiom,
                 save_unknown=save_unknown,
                 progress=True,
+                pending_lookup=pending_lookup,
             )
             await _drain_subprocess_transports()
         finally:
             axioms_file.close()
             unknown_file.close()
+            if pending_lookup:
+                print(
+                    f"{len(pending_lookup)} queued statement(s) unused "
+                    f"(mention terms never generated this run)"
+                )
 
     try:
         completed = _run_asyncio(classify())
