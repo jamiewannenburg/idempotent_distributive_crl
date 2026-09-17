@@ -1,0 +1,42 @@
+% Saved by Prover9-Mace4 Version 0.5, December 2007.
+
+set(ignore_option_dependencies). % GUI handles dependencies
+
+if(Prover9). % Options for Prover9
+  assign(max_seconds, 200).
+end_if.
+
+if(Mace4).   % Options for Mace4
+  assign(max_seconds, 60).
+end_if.
+
+formulas(assumptions).
+
+x<=x.
+(x<=y & y<=z) -> x<=z.
+(x<=y & y<=x) -> x=y.
+
+x \ y <= (y \ z) \ (x \ z).
+x\(y\z)=y\(x\z).
+x\x <= y -> y\y <= y.
+(x <= y) <-> ((x \ y) = (x \ y) \ (x \ y)).
+x <= (x \ y) \ y.
+
+e = e\e.
+e <= x\x.
+e \ x = x.
+(x <= y) <-> (e <= x\y).
+
+y\(y\x) <= y\x.
+
+x <= x\x.
+x\y <= x\(x\y).
+
+end_of_list.
+
+formulas(goals).
+
+(((x \ e) \ x) \ (x \ x)) = (((x \ e) \ e) \ (x \ x)).
+
+end_of_list.
+
