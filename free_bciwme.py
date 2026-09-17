@@ -44,6 +44,7 @@ if __name__ == "__main__":
             "sides are generated. Append only newly proven formulas."
         ),
     )
+    parser.add_argument("--axiom-base", type=str, default="bciwme", choices=["bciwme", "icrp", "idcrl", "rsi_icrp", "si_idcrl"])
     args = parser.parse_args()
 
     operations = [
@@ -55,7 +56,16 @@ if __name__ == "__main__":
 
     # m4 = Mace4(options=Mace4CliOptions(max_seconds=10,max_models=1))
     # p9 = Prover9(options=Prover9CliOptions(max_seconds=10))
-    axioms = [str(line) for line in bciwme_axioms.split("\n")]
+    if args.axiom_base == "bciwme":
+        axioms = [str(line) for line in bciwme_axioms.split("\n")]
+    elif args.axiom_base == "icrp":
+        axioms = [str(line) for line in icrp_axioms.split("\n")]
+    elif args.axiom_base == "idcrl":
+        axioms = [str(line) for line in idcrl_axioms.split("\n")]
+    elif args.axiom_base == "rsi_icrp":
+        axioms = [str(line) for line in rsi_icrp_axioms.split("\n")]
+    elif args.axiom_base == "si_idcrl":
+        axioms = [str(line) for line in si_idcrl_axioms.split("\n")]
     axioms.extend([
         r"(((x \ e) \ x) \ (x \ x)) = (((x \ e) \ e) \ (x \ x))."
     ])
