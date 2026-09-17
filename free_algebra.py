@@ -300,10 +300,7 @@ async def _stop_job(job: Any) -> None:
     if runner is not None:
         await asyncio.gather(runner, return_exceptions=True)
         return
-    try:
-        await job.wait()
-    except Exception:
-        return
+    await asyncio.gather(job.wait(), return_exceptions=True)
 
 
 async def _drain_subprocess_transports() -> None:
@@ -340,9 +337,11 @@ def _run_asyncio(coro: Any) -> bool:
     coroutine is abandoned, its ``finally`` runs only during interpreter
     shutdown, and PDF generation dies with ``sys.meta_path is None``.
     """
+    # Windows subprocesses need ProactorEventLoop (SelectorEventLoop cannot spawn them).
     if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    loop = asyncio.new_event_loop()
+        loop = asyncio.ProactorEventLoop()
+    else:
+        loop = asyncio.new_event_loop()
     completed = False
     try:
         asyncio.set_event_loop(loop)

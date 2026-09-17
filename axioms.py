@@ -141,11 +141,11 @@ x<=e | e<=x.
 
 
 def check_formulas(formulas: str, model_string: str, print_output: bool = False):
-    temp_file = tempfile.NamedTemporaryFile(delete=False)
-    temp_file.write(formulas.encode('utf-8'))
-    temp_file.close()
-    result = InterpFilter().run(input=model_string,formulas_file=temp_file.name,test='all_true')
-    os.unlink(temp_file.name)
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.write(formulas.encode('utf-8'))
+        temp_path = temp_file.name
+    result = InterpFilter().run(input=model_string,formulas_file=temp_path,test='all_true')
+    os.unlink(temp_path)
     m = re.search("checked 1, passed 1", result.stdout)
     if m:
         return True
