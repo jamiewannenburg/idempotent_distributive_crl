@@ -1,8 +1,11 @@
 """TPTP conversion and ATP backends (Vampire, Zipperposition) for free-algebra search.
 
-LADR theories are converted with ``pyp9m4.LadrToTptp`` (the LADR ``ladr_to_tptp``
-binary). Infix ``<=`` is sometimes left as infix in FOF formulas; we rewrite
-those atoms to the ``tptp1/2`` predicate that the converter already uses in CNF.
+LADR theories are converted with the LADR ``ladr_to_tptp`` binary (located via
+``pyp9m4.BinaryResolver``) using ordinary ``subprocess`` pipes. ``LadrToTptp.run``
+is not used: on Windows it drives the child through asyncio Proactor pipes, which
+can deliver empty stdin/stdout once other solvers (especially Cygwin Vampire) are
+running. Infix ``<=`` is sometimes left as infix in FOF formulas; we rewrite those
+atoms to the ``tptp1/2`` predicate that the converter already uses in CNF.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from pyp9m4 import LadrToTptp
+from pyp9m4 import BinaryResolver
 
 logger = logging.getLogger(__name__)
 
@@ -102,15 +105,57 @@ def replace_infix_le(tptp: str, pred: str = "tptp1") -> str:
     return "".join(out)
 
 
+_LADR_TO_TPTP_EXE: Path | None = None
+_LADR_TO_TPTP_TIMEOUT_S = 60.0
+
+
+def _ladr_to_tptp_executable() -> Path:
+    """Resolve ``ladr_to_tptp`` once (pyp9m4 may download the LADR tools)."""
+    global _LADR_TO_TPTP_EXE
+    if _LADR_TO_TPTP_EXE is None:
+        _LADR_TO_TPTP_EXE = BinaryResolver().resolve("ladr_to_tptp")
+    return _LADR_TO_TPTP_EXE
+
+
+def _conversion_failure_detail(stdout: str, stderr: str, exit_code: int | None) -> str:
+    """Prefer LADR diagnostics. Parse errors often go to stdout; exit 1 is normal."""
+    err = stderr.strip()
+    if err:
+        return f": {err}"
+    out = stdout.strip()
+    if out:
+        snippet = out if len(out) <= 400 else f"{out[:400]}…"
+        return f": {snippet}"
+    return f" (exit {exit_code})"
+
+
 def convert_ladr_to_tptp(ladr_text: str) -> str:
-    """Convert a LADR/Prover9 theory to TPTP FOF/CNF and fix infix ``<=``."""
-    result = LadrToTptp().run(input=ladr_text)
-    stdout = (result.stdout or "").strip()
+    """Convert a LADR/Prover9 theory to TPTP FOF/CNF and fix infix ``<=``.
+
+    Invokes ``ladr_to_tptp`` with ``subprocess.run`` (blocking pipes). The binary
+    always ``exit(1)`` even on success, so only missing TPTP formulas are a failure.
+    """
+    payload = ladr_text if ladr_text.endswith("\n") else f"{ladr_text}\n"
+    try:
+        completed = subprocess.run(
+            [os.fspath(_ladr_to_tptp_executable())],
+            input=payload,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_LADR_TO_TPTP_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"ladr_to_tptp timed out after {_LADR_TO_TPTP_TIMEOUT_S:g}s"
+        ) from exc
+    stdout = (completed.stdout or "").strip()
     if not stdout or not _TPTP_FORMULA_RE.search(stdout):
-        stderr = (result.stderr or "").strip()
         raise RuntimeError(
             "ladr_to_tptp produced no usable TPTP formulas"
-            + (f": {stderr}" if stderr else f" (exit {result.exit_code})")
+            + _conversion_failure_detail(stdout, completed.stderr or "", completed.returncode)
         )
     return replace_infix_le(stdout)
 
