@@ -20,6 +20,7 @@ from free_algebra import (
     classify_term_order,
     write_free_algebra_pdf,
 )
+from tptp_provers import discover_tptp_provers
 
 if __name__ == "__main__":
     import argparse
@@ -45,6 +46,20 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--axiom-base", type=str, default="bciwme", choices=["bciwme", "icrp", "idcrl", "rsi_icrp", "si_idcrl"])
+    parser.add_argument(
+        "--no-tptp",
+        action="store_true",
+        help="Do not race Vampire/Zipperposition (Prover9 + Mace4 only).",
+    )
+    parser.add_argument(
+        "--tptp-provers",
+        type=str,
+        default="auto",
+        help=(
+            "Comma-separated TPTP provers to race (vampire,zipperposition), "
+            "or 'auto' for every supported binary found on PATH."
+        ),
+    )
     args = parser.parse_args()
 
     operations = [
@@ -54,8 +69,6 @@ if __name__ == "__main__":
 
     variables = ["x"]
 
-    # m4 = Mace4(options=Mace4CliOptions(max_seconds=10,max_models=1))
-    # p9 = Prover9(options=Prover9CliOptions(max_seconds=10))
     if args.axiom_base == "bciwme":
         axioms = [str(line) for line in bciwme_axioms.split("\n")]
     elif args.axiom_base == "icrp":
@@ -66,11 +79,13 @@ if __name__ == "__main__":
         axioms = [str(line) for line in rsi_icrp_axioms.split("\n")]
     elif args.axiom_base == "si_idcrl":
         axioms = [str(line) for line in si_idcrl_axioms.split("\n")]
+    
+    # manually add some difficult theorems
     axioms.extend([
         r"(((x \ e) \ x) \ (x \ x)) = (((x \ e) \ e) \ (x \ x))."
     ])
     print("\n".join(axioms))
-    # manually add some difficult theorems
+
     m4_timeout = args.timeout
     m4_options = Mace4CliOptions(max_seconds=m4_timeout,max_models=1)
     p9_timeout = args.timeout
@@ -79,6 +94,16 @@ if __name__ == "__main__":
     equivalence_classes = TermPartialOrder()
     mace4 = Mace4(options=m4_options, timeout_s=m4_timeout)
     prover9 = Prover9(options=p9_options, timeout_s=p9_timeout)
+
+    if args.no_tptp:
+        tptp_provers = []
+    elif args.tptp_provers.strip().lower() == "auto":
+        tptp_provers = discover_tptp_provers()
+    else:
+        names = [part.strip() for part in args.tptp_provers.split(",")]
+        tptp_provers = discover_tptp_provers(include=names)
+    raced = ["mace4", "prover9", *[p.name for p in tptp_provers]]
+    print(f"Racing solvers: {', '.join(raced)}")
 
     input_dir = Path("input")
     input_dir.mkdir(parents=True, exist_ok=True)
@@ -147,6 +172,8 @@ if __name__ == "__main__":
                 save_unknown=save_unknown,
                 progress=True,
                 pending_lookup=pending_lookup,
+                tptp_provers=tptp_provers,
+                tptp_timeout_s=float(args.timeout),
             )
             await _drain_subprocess_transports()
         finally:

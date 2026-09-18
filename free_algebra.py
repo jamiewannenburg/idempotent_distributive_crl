@@ -13,6 +13,13 @@ import matplotlib.pyplot as plt
 import networkx as nx
 from pyp9m4 import Mace4, Prover9, ProverOutcome, Theory
 
+from tptp_provers import (
+    TptpProverSpec,
+    convert_ladr_to_tptp,
+    discover_tptp_provers,
+    try_prove_tptp,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -371,8 +378,32 @@ def _run_asyncio(coro: Any) -> bool:
         asyncio.set_event_loop(None)
         loop.close()
 
-async def decide(theory_text: str, mace4: Mace4, prover9: Prover9) -> Decision:
-    """Run Mace4 and Prover9 together; stop both as soon as either decides the theory."""
+async def decide(
+    theory_text: str,
+    mace4: Mace4,
+    prover9: Prover9,
+    *,
+    tptp_provers: Sequence[TptpProverSpec] | None = None,
+    tptp_timeout_s: float | None = None,
+) -> Decision:
+    """Race Mace4, Prover9, and any available TPTP ATPs; stop when one decides.
+
+    Mace4 may return ``FALSIFIED``. Prover9 and TPTP provers (Vampire,
+    Zipperposition, …) may return ``PROVED``. TPTP backends receive a
+    LADR→TPTP conversion of *theory_text* (see :mod:`tptp_provers`).
+    """
+    if tptp_provers is None:
+        tptp_provers = discover_tptp_provers()
+    timeout_s = float(tptp_timeout_s) if tptp_timeout_s is not None else 120.0
+
+    tptp_text: str | None = None
+    if tptp_provers:
+        try:
+            tptp_text = await asyncio.to_thread(convert_ladr_to_tptp, theory_text)
+        except Exception:
+            logger.exception("LADR→TPTP conversion failed; skipping TPTP provers")
+            tptp_provers = ()
+
     mace_job = mace4.start_amodels(input=theory_text)
     proof_job = prover9.start_aprove(input=theory_text)
 
@@ -381,7 +412,7 @@ async def decide(theory_text: str, mace4: Mace4, prover9: Prover9) -> Decision:
             return Decision.FALSIFIED
         return None
 
-    async def first_proof() -> Decision | None:
+    async def first_prover9_proof() -> Decision | None:
         async for event in proof_job.event_stream():
             if event.get("type") == "stdout" and "THEOREM PROVED" in event.get("line", ""):
                 return Decision.PROVED
@@ -393,9 +424,20 @@ async def decide(theory_text: str, mace4: Mace4, prover9: Prover9) -> Decision:
             return Decision.PROVED
         return None
 
-    mace_task = asyncio.create_task(first_counterexample())
-    proof_task = asyncio.create_task(first_proof())
-    pending: set[asyncio.Task[Decision | None]] = {mace_task, proof_task}
+    async def first_tptp_proof(prover: TptpProverSpec) -> Decision | None:
+        assert tptp_text is not None
+        if await try_prove_tptp(prover, tptp_text, timeout_s=timeout_s):
+            return Decision.PROVED
+        return None
+
+    mace_task = asyncio.create_task(first_counterexample(), name="mace4")
+    proof_task = asyncio.create_task(first_prover9_proof(), name="prover9")
+    tptp_tasks = [
+        asyncio.create_task(first_tptp_proof(prover), name=prover.name)
+        for prover in tptp_provers
+        if tptp_text is not None
+    ]
+    pending: set[asyncio.Task[Decision | None]] = {mace_task, proof_task, *tptp_tasks}
     try:
         while pending:
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
@@ -414,7 +456,7 @@ async def decide(theory_text: str, mace4: Mace4, prover9: Prover9) -> Decision:
                     return verdict
         return Decision.UNKNOWN
     finally:
-        for task in (mace_task, proof_task):
+        for task in (mace_task, proof_task, *tptp_tasks):
             if not task.done():
                 task.cancel()
         await asyncio.gather(
@@ -422,6 +464,7 @@ async def decide(theory_text: str, mace4: Mace4, prover9: Prover9) -> Decision:
             _stop_job(proof_job),
             mace_task,
             proof_task,
+            *tptp_tasks,
             return_exceptions=True,
         )
         await _drain_subprocess_transports()
@@ -687,6 +730,8 @@ async def classify_term_order(
     save_unknown: Callable[[str], None],
     progress: bool = False,
     pending_lookup: list[str] | None = None,
+    tptp_provers: Sequence[TptpProverSpec] | None = None,
+    tptp_timeout_s: float | None = None,
 ) -> None:
     """Classify the free-algebra order by expanding a pruned pool of representatives.
 
@@ -728,18 +773,36 @@ async def classify_term_order(
             return
         po = PartialOrderVerdict.UNKNOWN
         theory = Theory(assumptions=axioms, goals=[f"{left} = {right}."])
-        verdict = await decide(theory.to_theory_text(), mace4, prover9)
+        verdict = await decide(
+            theory.to_theory_text(),
+            mace4,
+            prover9,
+            tptp_provers=tptp_provers,
+            tptp_timeout_s=tptp_timeout_s,
+        )
         if verdict is Decision.PROVED:
             po = PartialOrderVerdict.EQUAL
         elif verdict is Decision.FALSIFIED:  # not equal in free algebra
             equivalence_classes.mark_unequal(left, right)
             theory = Theory(assumptions=axioms, goals=[f"{left} <= {right}."])
-            verdict = await decide(theory.to_theory_text(), mace4, prover9)
+            verdict = await decide(
+                theory.to_theory_text(),
+                mace4,
+                prover9,
+                tptp_provers=tptp_provers,
+                tptp_timeout_s=tptp_timeout_s,
+            )
             if verdict is Decision.PROVED:
                 po = PartialOrderVerdict.LESS_THAN
             elif verdict is Decision.FALSIFIED:  # not less than or equal in free algebra
                 theory = Theory(assumptions=axioms, goals=[f"{right} <= {left}."])
-                verdict = await decide(theory.to_theory_text(), mace4, prover9)
+                verdict = await decide(
+                    theory.to_theory_text(),
+                    mace4,
+                    prover9,
+                    tptp_provers=tptp_provers,
+                    tptp_timeout_s=tptp_timeout_s,
+                )
                 if verdict is Decision.PROVED:
                     po = PartialOrderVerdict.GREATER_THAN
                 elif verdict is Decision.FALSIFIED:  # incomparable in free algebra
