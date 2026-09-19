@@ -1,0 +1,10 @@
+interpretation( 3, [number = 2,seconds = 0], [
+    function(*(_,_), [
+        0,1,2,
+        1,1,1,
+        2,1,2]),
+    function(\(_,_), [
+        0,1,2,
+        2,2,2,
+        1,1,2]),
+    function(e, [0])]).

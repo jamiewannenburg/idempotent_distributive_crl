@@ -1,0 +1,182 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{amsfonts}
+\usepackage{amscd}
+\usepackage{amsthm}
+\usepackage{amsbsy}
+\usepackage{amsthm}
+\theoremstyle{definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{definition}{Definition}
+\newtheorem{example}{Example}
+\newtheorem{remark}{Remark}
+\newtheorem{assumption}{Assumption}
+
+\begin{document}
+
+\newcommand{\res}{\mathbin{\backslash}}
+
+\begin{theorem}
+For every \(x\),
+\[
+((((x\res e)\res e)\res x)\res x)
+=
+((((((x\res e)\res e)\res x)\res x)\res e)\res e).
+\]
+\end{theorem}
+
+\begin{proof}
+Introduce the abbreviations
+\[
+u=x\res e,\qquad
+v=u\res e,\qquad
+w=v\res x,
+\]
+and
+\[
+a=w\res x,\qquad
+b=a\res e,\qquad
+c=b\res e.
+\]
+It is therefore enough to prove \(a=c\).
+
+First, the contraction and mingle axioms give
+\[
+p\res(p\res q)\leq p\res q
+\quad\text{and}\quad
+p\res q\leq p\res(p\res q).
+\]
+Hence, by antisymmetry,
+\begin{equation}
+p\res(p\res q)=p\res q.
+\tag{1}
+\end{equation}
+
+We shall also use the following consequence of the axioms:
+\begin{equation}
+p\leq q
+\quad\Longrightarrow\quad
+q\res e\leq p\res e.
+\tag{2}
+\end{equation}
+Indeed, from
+\[
+q\leq(q\res e)\res e
+\]
+and \(p\leq q\), transitivity gives
+\[
+p\leq(q\res e)\res e.
+\]
+Using \(r\leq s\iff e\leq r\res s\), followed by exchange, we obtain
+\[
+e\leq p\res\bigl((q\res e)\res e\bigr)
+  =(q\res e)\res(p\res e).
+\]
+Applying the same order characterization once more proves (2).
+
+The axiom \(p\leq(p\res q)\res q\), with \(p=a\) and \(q=e\),
+gives
+\begin{equation}
+a\leq(a\res e)\res e=c.
+\tag{3}
+\end{equation}
+
+We next prove
+\begin{equation}
+a=w\res v.
+\tag{4}
+\end{equation}
+The axiom
+\[
+p\res q\leq(q\res r)\res(p\res r)
+\]
+with \(p=w,q=x,r=e\) gives
+\[
+a=w\res x
+ \leq(x\res e)\res(w\res e)
+ =u\res(w\res e).
+\]
+By exchange,
+\[
+u\res(w\res e)=w\res(u\res e)=w\res v,
+\]
+so \(a\leq w\res v\).
+
+Conversely, applying the same axiom with \(p=w,q=v,r=x\) gives
+\[
+w\res v
+ \leq(v\res x)\res(w\res x)
+ =w\res a.
+\]
+Since \(a=w\res x\), equation (1) yields
+\[
+w\res a=w\res(w\res x)=w\res x=a.
+\]
+Thus \(w\res v\leq a\), proving (4) by antisymmetry.
+
+From (3) and (2),
+\[
+c\res e\leq a\res e=b.
+\]
+On the other hand,
+\[
+b\leq(b\res e)\res e=c\res e.
+\]
+Consequently,
+\begin{equation}
+b=c\res e.
+\tag{5}
+\end{equation}
+
+Using exchange, first with \(b=a\res e\) and then with
+\(b=c\res e\), we obtain
+\[
+u\res b
+ =u\res(a\res e)
+ =a\res(u\res e)
+ =a\res v
+\]
+and
+\[
+u\res b
+ =u\res(c\res e)
+ =c\res(u\res e)
+ =c\res v.
+\]
+Therefore
+\begin{equation}
+a\res v=c\res v.
+\tag{6}
+\end{equation}
+
+Since \(a=w\res v\), exchange gives, for every \(t\),
+\[
+t\res a
+ =t\res(w\res v)
+ =w\res(t\res v).
+\]
+Taking \(t=a\) and \(t=c\), and using (6), gives
+\[
+a\res a
+ =w\res(a\res v)
+ =w\res(c\res v)
+ =c\res a.
+\]
+The axiom \(e\leq a\res a\) therefore implies
+\[
+e\leq c\res a.
+\]
+By \(p\leq q\iff e\leq p\res q\), this means
+\[
+c\leq a.
+\]
+Together with (3), antisymmetry yields \(a=c\), which is precisely
+the required identity.
+\end{proof}
+
+\end{document}
