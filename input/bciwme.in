@@ -36,7 +36,7 @@ end_of_list.
 
 formulas(goals).
 
-(((x \ e) \ x) \ (x \ x)) = (((x \ e) \ e) \ (x \ x)).
+(((x \ e) \ e) \ x) \ x = (((((x \ e) \ e) \ x) \ x) \ e) \ e.
 
 end_of_list.
 
