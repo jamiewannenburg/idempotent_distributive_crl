@@ -1,0 +1,239 @@
+% ------------------------------
+% WARNING: time unlimited strategy and instruction limiting not in place - attempting to translate instructions to time
+% dis+1011_93_sil=16000:tgt=ground:spb=goal_then_units:lsd=100:nwc=1.2:lftc=20:random_seed=1575455028:i=1283:kws=inv_pre
+cedence:bs=on:av=off_7 on bciwme for (7ds/1283Mi)
+%  found proof, printing to "/tmp/vampire-proof-81198-81318"...
+% ...printing done.
+% Refutation found. Thanks to Tanya!
+% SZS status Theorem for bciwme
+% SZS output start Proof for bciwme
+fof(f2,axiom,(
+  ! [X0] : ! [X1] : ! [X2] : ((tptp1(X0,X1) & tptp1(X1,X2)) => tptp1(X0,X2))),
+  file('input/bciwme.p','sos')).
+fof(f3,axiom,(
+  ! [X0] : ! [X1] : ((tptp1(X0,X1) & tptp1(X1,X0)) => X0 = X1)),
+  file('input/bciwme.p','sos')).
+fof(f4,axiom,(
+  ( ! [X2,X0,X1] : (tptp1(tptp0(X0,X1),tptp0(tptp0(X1,X2),tptp0(X0,X2)))) )),
+  file('input/bciwme.p','sos')).
+fof(f5,axiom,(
+  ( ! [X2,X0,X1] : (tptp0(X0,tptp0(X1,X2)) = tptp0(X1,tptp0(X0,X2))) )),
+  file('input/bciwme.p','sos')).
+fof(f8,axiom,(
+  ( ! [X0,X1] : (tptp1(X0,tptp0(tptp0(X0,X1),X1))) )),
+  file('input/bciwme.p','sos')).
+fof(f10,axiom,(
+  ( ! [X0] : (tptp1(e,tptp0(X0,X0))) )),
+  file('input/bciwme.p','sos')).
+fof(f12,axiom,(
+  ! [X0] : ! [X1] : (tptp1(X0,X1) <=> tptp1(e,tptp0(X0,X1)))),
+  file('input/bciwme.p','sos')).
+fof(f13,axiom,(
+  ( ! [X0,X1] : (tptp1(tptp0(X0,tptp0(X0,X1)),tptp0(X0,X1))) )),
+  file('input/bciwme.p','sos')).
+fof(f15,axiom,(
+  ( ! [X0,X1] : (tptp1(tptp0(X0,X1),tptp0(X0,tptp0(X0,X1)))) )),
+  file('input/bciwme.p','sos')).
+fof(f16,conjecture,(
+  ! [X0] : tptp0(tptp0(tptp0(tptp0(X0,e),e),X0),X0) = tptp0(tptp0(tptp0(tptp0(tptp0(tptp0(X0,e),e),X0),X0),e),e)),
+  file('input/bciwme.p','goals')).
+fof(f17,negated_conjecture,(
+  ~ ! [X0] : tptp0(tptp0(tptp0(tptp0(X0,e),e),X0),X0) = tptp0(tptp0(tptp0(tptp0(tptp0(tptp0(X0,e),e),X0),X0),e),e)),
+  inference(negated_conjecture,[status(cth)],[f16])).
+fof(f18,plain,(
+  ! [X0,X1,X2] : ((tptp1(X0,X1) & tptp1(X1,X2)) => tptp1(X0,X2))),
+  inference(flattening,[],[f2])).
+fof(f19,plain,(
+  ! [X0,X1] : ((tptp1(X0,X1) & tptp1(X1,X0)) => X0 = X1)),
+  inference(flattening,[],[f3])).
+fof(f22,plain,(
+  ! [X0,X1] : (tptp1(X0,X1) <=> tptp1(e,tptp0(X0,X1)))),
+  inference(flattening,[],[f12])).
+fof(f23,plain,(
+  ! [X0,X1,X2] : (tptp1(X0,X2) | (~tptp1(X0,X1) | ~tptp1(X1,X2)))),
+  inference(ennf_transformation,[],[f18])).
+fof(f24,plain,(
+  ! [X0,X1,X2] : (tptp1(X0,X2) | (~tptp1(X0,X1) | ~tptp1(X1,X2)))),
+  inference(ennf_transformation,[],[f18])).
+fof(f24,plain,(
+  ! [X0,X1,X2] : (tptp1(X0,X2) | ~tptp1(X0,X1) | ~tptp1(X1,X2))),
+  inference(flattening,[],[f23])).
+fof(f25,plain,(
+  ! [X0,X1] : (X0 = X1 | (~tptp1(X0,X1) | ~tptp1(X1,X0)))),
+  inference(ennf_transformation,[],[f19])).
+fof(f26,plain,(
+  ! [X0,X1] : (X0 = X1 | ~tptp1(X0,X1) | ~tptp1(X1,X0))),
+  inference(flattening,[],[f25])).
+fof(f28,plain,(
+  ? [X0] : tptp0(tptp0(tptp0(tptp0(X0,e),e),X0),X0) != tptp0(tptp0(tptp0(tptp0(tptp0(tptp0(X0,e),e),X0),X0),e),e)),
+  inference(ennf_transformation,[],[f17])).
+fof(f30,plain,(
+  ! [X0,X1] : ((tptp1(X0,X1) | ~tptp1(e,tptp0(X0,X1))) & (tptp1(e,tptp0(X0,X1)) | ~tptp1(X0,X1)))),
+  inference(nnf_transformation,[],[f22])).
+fof(f31,plain,(
+  tptp0(tptp0(tptp0(tptp0(sK0,e),e),sK0),sK0) != tptp0(tptp0(tptp0(tptp0(tptp0(tptp0(sK0,e),e),sK0),sK0),e),e)),
+  inference(skolemize,[status(esa),new_symbols(skolem,[sK0]),skolemize(X0,sK0)],[f28])).
+fof(f32,plain,(
+  ( ! [X2,X0,X1] : (~tptp1(X1,X2) | ~tptp1(X0,X1) | tptp1(X0,X2)) )),
+  inference(cnf_transformation,[],[f24])).
+fof(f33,plain,(
+  ( ! [X0,X1] : (~tptp1(X1,X0) | ~tptp1(X0,X1) | X0 = X1) )),
+  inference(cnf_transformation,[],[f26])).
+fof(f37,plain,(
+  ( ! [X0,X1] : (tptp1(e,tptp0(X0,X1)) | ~tptp1(X0,X1)) )),
+fof(f38,plain,(
+  ( ! [X0,X1] : (~tptp1(e,tptp0(X0,X1)) | tptp1(X0,X1)) )),
+  inference(cnf_transformation,[],[f30])).
+fof(f39,plain,(
+  tptp0(tptp0(tptp0(tptp0(sK0,e),e),sK0),sK0) != tptp0(tptp0(tptp0(tptp0(tptp0(tptp0(sK0,e),e),sK0),sK0),e),e)),
+  inference(cnf_transformation,[],[f31])).
+fof(f40,definition,(
+  sF1 = tptp0(sK0,e)),
+  introduced(definition,[new_symbols(definition,[sF1])],[function_definition])).
+fof(f41,plain,(
+  tptp0(sK0,e) = sF1),
+  inference(reorient_equations,[],[f40])).
+fof(f42,definition,(
+  sF2 = tptp0(sF1,e)),
+  introduced(definition,[new_symbols(definition,[sF2])],[function_definition])).
+fof(f43,plain,(
+  tptp0(sF1,e) = sF2),
+  inference(reorient_equations,[],[f42])).
+fof(f44,definition,(
+  sF3 = tptp0(sF2,sK0)),
+  introduced(definition,[new_symbols(definition,[sF3])],[function_definition])).
+fof(f45,plain,(
+  tptp0(sF2,sK0) = sF3),
+  inference(reorient_equations,[],[f44])).
+fof(f47,plain,(
+  tptp0(sF3,sK0) = sF4),
+  inference(reorient_equations,[],[f46])).
+fof(f48,definition,(
+  sF5 = tptp0(sF4,e)),
+  introduced(definition,[new_symbols(definition,[sF5])],[function_definition])).
+fof(f49,plain,(
+  tptp0(sF4,e) = sF5),
+  inference(reorient_equations,[],[f48])).
+fof(f50,definition,(
+  sF6 = tptp0(sF5,e)),
+  introduced(definition,[new_symbols(definition,[sF6])],[function_definition])).
+fof(f51,plain,(
+  tptp0(sF5,e) = sF6),
+  inference(reorient_equations,[],[f50])).
+fof(f52,plain,(
+  sF4 != sF6),
+  inference(definition_folding,[],[f39,f51,f49,f47,f45,f43,f41,f47,f45,f43,f41])).
+fof(f61,plain,(
+  tptp1(sF4,tptp0(sF5,e))),
+  inference(superposition,[],[f8,f49])).
+fof(f62,plain,(
+  tptp1(sF5,tptp0(sF6,e))),
+  inference(superposition,[],[f8,f51])).
+fof(f63,plain,(
+  tptp1(sF4,sF6)),
+  inference(forward_demodulation,[],[f61,f51])).
+fof(f105,plain,(
+  ( ! [X2,X0,X1] : (tptp1(X0,tptp0(tptp0(X1,X2),X2)) | ~tptp1(X0,X1)) )),
+  inference(resolution,[],[f32,f8])).
+fof(f219,plain,(
+  ( ! [X0,X1] : (~tptp1(tptp0(X0,tptp0(X0,X1)),tptp0(X0,X1)) | tptp0(X0,X1) = tptp0(X0,tptp0(X0,X1))) )),
+  inference(resolution,[],[f33,f15])).
+fof(f250,plain,(
+  ~tptp1(sF6,sF4) | sF4 = sF6),
+  inference(resolution,[],[f33,f63])).
+fof(f252,plain,(
+  ~tptp1(tptp0(sF6,e),sF5) | sF5 = tptp0(sF6,e)),
+  inference(resolution,[],[f33,f62])).
+fof(f258,plain,(
+  ~tptp1(sF6,sF4)),
+  inference(forward_subsumption_resolution,[],[f250,f52])).
+fof(f268,plain,(
+  ( ! [X0,X1] : (tptp0(X0,X1) = tptp0(X0,tptp0(X0,X1))) )),
+  inference(forward_subsumption_resolution,[],[f219,f13])).
+fof(f724,plain,(
+  ( ! [X0] : (tptp1(sF4,tptp0(tptp0(sK0,X0),tptp0(sF3,X0)))) )),
+  inference(superposition,[],[f4,f47])).
+fof(f742,plain,(
+  ( ! [X0] : (tptp1(tptp0(X0,sF2),tptp0(sF3,tptp0(X0,sK0)))) )),
+  inference(superposition,[],[f4,f45])).
+fof(f888,plain,(
+  tptp1(sF4,tptp0(sF1,tptp0(sF3,e)))),
+  inference(superposition,[],[f724,f41])).
+fof(f1139,plain,(
+  tptp1(tptp0(sF3,sF2),tptp0(sF3,sK0))),
+  inference(superposition,[],[f742,f268])).
+fof(f1140,plain,(
+  tptp1(tptp0(sF3,sF2),sF4)),
+  inference(forward_demodulation,[],[f1139,f47])).
+fof(f1176,plain,(
+  ( ! [X0] : (tptp0(sF1,tptp0(X0,e)) = tptp0(X0,sF2)) )),
+  inference(superposition,[],[f5,f43])).
+fof(f1183,plain,(
+  ( ! [X0] : (tptp0(X0,sF5) = tptp0(sF4,tptp0(X0,e))) )),
+  inference(superposition,[],[f5,f49])).
+fof(f1276,plain,(
+  tptp1(sF4,tptp0(sF3,tptp0(sF1,e)))),
+  inference(superposition,[],[f888,f5])).
+fof(f1322,plain,(
+  tptp1(sF4,tptp0(sF3,sF2))),
+  inference(forward_demodulation,[],[f1276,f43])).
+fof(f1358,plain,(
+  ~tptp1(tptp0(sF3,sF2),sF4) | sF4 = tptp0(sF3,sF2)),
+  inference(resolution,[],[f1322,f33])).
+fof(f1360,plain,(
+  sF4 = tptp0(sF3,sF2)),
+  inference(forward_subsumption_resolution,[],[f1358,f1140])).
+fof(f1360,plain,(
+  sF4 = tptp0(sF3,sF2)),
+  inference(forward_subsumption_resolution,[],[f1358,f1140])).
+fof(f1374,plain,(
+  ( ! [X0] : (tptp0(X0,sF4) = tptp0(sF3,tptp0(X0,sF2))) )),
+  inference(superposition,[],[f5,f1360])).
+fof(f2172,plain,(
+  tptp0(sF1,sF5) = tptp0(sF4,sF2)),
+  inference(superposition,[],[f1176,f49])).
+fof(f2485,plain,(
+  ( ! [X0] : (tptp1(e,tptp0(X0,sF5)) | ~tptp1(sF4,tptp0(X0,e))) )),
+  inference(superposition,[],[f37,f1183])).
+fof(f15025,plain,(
+  ( ! [X0] : (~tptp1(sF4,tptp0(X0,e)) | tptp1(X0,sF5)) )),
+  inference(resolution,[],[f2485,f38])).
+fof(f15052,plain,(
+  ( ! [X0] : (tptp1(tptp0(X0,e),sF5) | ~tptp1(sF4,X0)) )),
+  inference(resolution,[],[f15025,f105])).
+fof(f15064,plain,(
+  ~tptp1(sF4,sF6) | sF5 = tptp0(sF6,e)),
+  inference(resolution,[],[f15052,f252])).
+fof(f15081,plain,(
+  sF5 = tptp0(sF6,e)),
+  inference(forward_subsumption_resolution,[],[f15064,f63])).
+fof(f15099,plain,(
+  tptp0(sF1,sF5) = tptp0(sF6,sF2)),
+  inference(superposition,[],[f1176,f15081])).
+fof(f15531,plain,(
+  tptp0(sF4,sF2) = tptp0(sF6,sF2)),
+  inference(superposition,[],[f15099,f2172])).
+fof(f15844,plain,(
+  tptp0(sF4,sF4) = tptp0(sF3,tptp0(sF6,sF2))),
+  inference(superposition,[],[f1374,f15531])).
+fof(f15938,plain,(
+  tptp0(sF4,sF4) = tptp0(sF6,sF4)),
+  inference(forward_demodulation,[],[f15844,f1374])).
+fof(f16311,plain,(
+  tptp1(e,tptp0(sF6,sF4))),
+  inference(superposition,[],[f10,f15938])).
+fof(f16564,plain,(
+  tptp1(sF6,sF4)),
+  inference(resolution,[],[f16311,f38])).
+fof(f16568,plain,(
+  $false),
+  inference(forward_subsumption_resolution,[],[f16564,f258]))
+% SZS output end Proof for bciwme
+% ------------------------------
+% Version: Vampire 5.1.0 (Release build, commit 7b2f410 on 2026-08-13 10:17:34 +0200)
+% Linked with Z3 4.14.0.0 3c47fd96cf5645d0c42b2c819d9e9a84380aa721 NOTFOUND
+% CaDiCaL version: 2.1.3
+% Termination reason: Refutation
+% Time elapsed: 0.134 s
+% Peak memory usage: 20 MB
+% Success in time 9.099 s
