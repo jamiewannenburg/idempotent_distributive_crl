@@ -1,7 +1,9 @@
-from pyp9m4 import InterpFilter
-import tempfile
 import os
 import re
+import tempfile
+
+from pyp9m4 import InterpFilter
+
 
 def to_p9m4(axioms,goals=""):
     return f"""formulas(assumptions).
@@ -31,6 +33,48 @@ po_axioms = """
 x<=x.
 (x<=y & y<=z) -> x<=z.
 (x<=y & y<=x) -> x=y.
+"""
+
+bci_axioms = po_axioms + r"""
+x \ y <= (y \ z) \ (x \ z).
+x\(y\z)=y\(x\z).
+x\x <= y -> y\y <= y.
+(x <= y) <-> ((x \ y) \ (x \ y) <= (x \ y)).
+"""
+
+bciw_axioms = bci_axioms + r"""
+y\(y\x) <= y\x.
+"""
+
+bciwm_axioms = bciw_axioms + r"""
+x <= x\x.
+x\y <= x\(x\y).
+"""
+
+bcim_axioms = bci_axioms + r"""
+x <= x\x.
+x\y <= x\(x\y).
+"""
+
+bcie_axioms = bci_axioms + r"""
+e = e\e.
+e <= x\x.
+e \ x = x.
+(x <= y) <-> (e <= x\y).
+"""
+
+bciwe_axioms = bcie_axioms + r"""
+y\(y\x) <= y\x.
+"""
+
+bcime_axioms = bcie_axioms + r"""
+x <= x\x.
+x\y <= x\(x\y).
+"""
+
+bciwme_axioms = bciwe_axioms + r"""
+x <= x\x.
+x\y <= x\(x\y).
 """
 
 commutative_monoid_axioms = """
@@ -97,11 +141,11 @@ x<=e | e<=x.
 
 
 def check_formulas(formulas: str, model_string: str, print_output: bool = False):
-    temp_file = tempfile.NamedTemporaryFile(delete=False)
-    temp_file.write(formulas.encode('utf-8'))
-    temp_file.close()
-    result = InterpFilter().run(input=model_string,formulas_file=temp_file.name,test='all_true')
-    os.unlink(temp_file.name)
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.write(formulas.encode('utf-8'))
+        temp_path = temp_file.name
+    result = InterpFilter().run(input=model_string,formulas_file=temp_path,test='all_true')
+    os.unlink(temp_path)
     m = re.search("checked 1, passed 1", result.stdout)
     if m:
         return True

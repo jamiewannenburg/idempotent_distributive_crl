@@ -3,11 +3,11 @@
 set(ignore_option_dependencies). % GUI handles dependencies
 
 if(Prover9). % Options for Prover9
-  assign(max_seconds, 60).
+  assign(max_seconds, -1).
 end_if.
 
 if(Mace4).   % Options for Mace4
-  assign(max_seconds, 60).
+  assign(max_seconds, -1).
 end_if.
 
 formulas(assumptions).
@@ -23,19 +23,24 @@ e*x=x.
 x<=y -> z*x <= z*y.
 
 (x*y<=z)<->(y<=x\z).
+(x <= y)<->((x\y) = (x\y)\(x\y)).
 
 x=x*x.
 
 % extra helpful identities
-(x <= y)<->((x\y) = (x\y)\(x\y)).
 ((y\z)\z)\z = y\z.
 x\(x\y) = x\y.
 (x \ y) * (y \ z) <= x \ z.
 x <= y \ (x * y).
+((x \ x) \ e) <= (((x \ e) \ (x \ e)) \ e).
+
+% proven before
 
 end_of_list.
 
 formulas(goals).
+
+(x\y)\y = (x\((x\y)\y))\((x\y)\y).
 
 end_of_list.
 

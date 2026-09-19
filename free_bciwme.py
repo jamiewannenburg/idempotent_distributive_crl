@@ -4,7 +4,13 @@ from pathlib import Path
 from pyp9m4 import Mace4, Prover9
 from pyp9m4.options import Mace4CliOptions, Prover9CliOptions
 
-from axioms import icrp_axioms, idcrl_axioms, rsi_icrp_axioms, si_idcrl_axioms
+from axioms import (
+    bciwme_axioms,
+    icrp_axioms,
+    idcrl_axioms,
+    rsi_icrp_axioms,
+    si_idcrl_axioms,
+)
 from free_algebra import (
     Operation,
     OperationType,
@@ -23,12 +29,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-level", type=int, default=2)
     parser.add_argument("--timeout", type=int, default=120)
-    parser.add_argument("-o", "--output", type=str, default="output/free_icrp.pdf")
+    parser.add_argument("-o", "--output", type=str, default="output/free_bciwme.pdf")
     parser.add_argument(
         "--axioms",
         type=str,
-        default="input/free_icrp_axioms.txt",
-        help="Path to the proven-statements file (default: input/free_icrp_axioms.txt)",
+        default="input/free_bciwme_axioms.txt",
+        help="Path to the proven-statements file (default: input/free_bciwme_axioms.txt)",
     )
     parser.add_argument(
         "--lookup-only",
@@ -39,7 +45,7 @@ if __name__ == "__main__":
             "sides are generated. Append only newly proven formulas."
         ),
     )
-    parser.add_argument("--axiom-base", type=str, default="icrp", choices=["icrp", "idcrl", "rsi_icrp", "si_idcrl"])
+    parser.add_argument("--axiom-base", type=str, default="bciwme", choices=["bciwme", "icrp", "idcrl", "rsi_icrp", "si_idcrl"])
     parser.add_argument(
         "--no-tptp",
         action="store_true",
@@ -57,14 +63,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     operations = [
-        Operation(2, OperationType.INFIX, "*", commutative=True, idempotent=True),
         Operation(2, OperationType.INFIX, "\\"),
         Operation(0, OperationType.PREFIX, "e")
     ]
 
     variables = ["x"]
 
-    if args.axiom_base == "icrp":
+    if args.axiom_base == "bciwme":
+        axioms = [str(line) for line in bciwme_axioms.split("\n")]
+    elif args.axiom_base == "icrp":
         axioms = [str(line) for line in icrp_axioms.split("\n")]
     elif args.axiom_base == "idcrl":
         axioms = [str(line) for line in idcrl_axioms.split("\n")]
@@ -72,32 +79,13 @@ if __name__ == "__main__":
         axioms = [str(line) for line in rsi_icrp_axioms.split("\n")]
     elif args.axiom_base == "si_idcrl":
         axioms = [str(line) for line in si_idcrl_axioms.split("\n")]
+    
     # manually add some difficult theorems
     axioms.extend([
-        "((x \\ x) \\ e) <= (((x \\ e) \\ (x \\ e)) \\ e).",
-        # "((x \\ e) \\ x) * (x \\ x) = (x \\ e) \\ x.",
-        "(x \\ y) * (y \\ z) <= x \\ z.",
-        "x <= y \\ (x * y).",
-        "(x <= y)<->((x\\y) = (x\\y)\\(x\\y)).",
-        "((y\\z)\\z)\\z = y\\z.",
-        "x\\(x\\y) = x\\y.",
-        # "((x \\ e) \\ (x * e)) = (((x \\ e) \\ e) * ((x \\ e) \\ x)).",
-        # "((x \\ e) \\ x) = (((x \\ e) \\ e) * ((x \\ e) \\ x)).",
-        # "((e \\ (x * e)) * (x \\ (x \\ e)))  =  x * (x \\ (x \\ e)).",
-        "x * (x \\ (x \\ e)) =  x * ((x * x) \\ e).",
-        "x * ((x * x) \\ e)  =  x * (x \\ e).",
-        # "((e \\ x) \\ (e * x)) * ((e \\ e) \\ (e \\ e)) = (x \\ x) * (e \\ e).",
-        "(x \\ x) * (e \\ e) = (x \\ x).",
-        "((x \\ x) \\ e) = (((x \\ e) \\ e) * (x \\ e)).",
-        # "((e \\ (x * e)) * (x \\ (x \\ e))) = (x * (x \\ e)).",
-        # "(((e \\ x) \\ (e * x)) * ((e \\ e) \\ (e \\ e))) = (x \\ x).",
-        "(((x \\ e) \\ e) * ((x \\ e) \\ x)) = ((x \\ e) \\ x).",
-        "((x \\ e) \\ x) = (((x \\ e) \\ (e \\ x)) * ((x \\ x) \\ (x \\ x))).",
-        "(((x \\ e) \\ e) * x) = (x * ((x \\ e) \\ e)).",
-        "(((x \\ x) \\ e) \\ x) = (((x \\ e) \\ e) \\ ((x \\ e) \\ x)).",
-        "(((x \\ e) \\ x) \\ (x \\ x)) = (((x \\ e) \\ e) \\ (x \\ x))."
-        ])
+        r"(((x \ e) \ x) \ (x \ x)) = (((x \ e) \ e) \ (x \ x))."
+    ])
     print("\n".join(axioms))
+
     m4_timeout = args.timeout
     m4_options = Mace4CliOptions(max_seconds=m4_timeout,max_models=1)
     p9_timeout = args.timeout
@@ -121,7 +109,7 @@ if __name__ == "__main__":
     input_dir.mkdir(parents=True, exist_ok=True)
     axioms_path = Path(args.axioms)
     axioms_path.parent.mkdir(parents=True, exist_ok=True)
-    unknown_path = input_dir / "free_icrp_unknown.txt"
+    unknown_path = input_dir / "free_bciwme_unknown.txt"
 
     # Formulas already on disk: used to avoid re-appending.
     known_formulas: set[str] = set()
@@ -204,7 +192,7 @@ if __name__ == "__main__":
             axioms_file.close()
         if not unknown_file.closed:
             unknown_file.close()
-        write_free_algebra_pdf(equivalence_classes, unknowns, args.output, operations, "ICRP")
+        write_free_algebra_pdf(equivalence_classes, unknowns, args.output, operations, "BCIWME")
     if not completed:
         sys.exit(130)
 
