@@ -82,7 +82,9 @@ if __name__ == "__main__":
     
     # manually add some difficult theorems
     axioms.extend([
-        r"(((x \ e) \ x) \ (x \ x)) = (((x \ e) \ e) \ (x \ x))."
+        r"(((x \ e) \ x) \ (x \ x)) = (((x \ e) \ e) \ (x \ x)).",
+        r"((((x \ y) \ y) \ x) \ x) = ((((((x \ y) \ y) \ x) \ x) \ y) \ y).",
+        r"((((x \ y) \ y) \ x) \ x) = ((((x \ y) \ y) \ x) \ ((x \ y) \ y)).",
     ])
     print("\n".join(axioms))
 
