@@ -23,4 +23,4 @@ fof(sos,axiom,! [X9] : ! [X10] : (tptp1(X9,X10) <=> tptp1(e,tptp0(X9,X10)))).
 cnf(sos,axiom,tptp1(tptp0(A,tptp0(A,B)),tptp0(A,B))).
 cnf(sos,axiom,tptp1(A,tptp0(A,A))).
 cnf(sos,axiom,tptp1(tptp0(A,B),tptp0(A,tptp0(A,B)))).
-fof(goals,conjecture,! [X11] : tptp0(tptp0(tptp0(tptp0(X11,e),e),X11),X11) = tptp0(tptp0(tptp0(tptp0(tptp0(tptp0(X11,e),e),X11),X11),e),e)).
+fof(goals,conjecture,! [X11] : tptp0(tptp0(tptp0(X11,e),e),X11) = tptp0(tptp0(tptp0(tptp0(tptp0(tptp0(tptp0(tptp0(tptp0(X11,e),e),X11),e),e),X11),e),e),X11)).
