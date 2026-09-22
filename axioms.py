@@ -89,6 +89,8 @@ x<=y -> z*x <= z*y.
 
 crp_axioms = commutative_po_monoid_axioms + r"""
 (x*y<=z)<->(y<=x\z).
+(x<=y)->(y\z<=x\z).
+(x<=y)->(z\x<=z\y).
 """
 
 icrp_axioms = crp_axioms + """
