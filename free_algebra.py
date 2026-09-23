@@ -11,7 +11,7 @@ from typing import Any
 import matplotlib.backends.backend_pdf
 import matplotlib.pyplot as plt
 import networkx as nx
-from pyp9m4 import Mace4, Prover9, ProverOutcome, Theory
+from pyp9m4 import ClauseTester, Mace4, Prover9, ProverOutcome, Theory
 
 from tptp_provers import (
     TptpProverSpec,
@@ -530,6 +530,299 @@ def _try_apply_pending_lookups(
     return applied
 
 
+def _algebras_have_leq(interpretations: Path) -> tuple[int, bool]:
+    """Return ``(count, every algebra has a <= symbol)`` for a Mace4 model file."""
+    text = interpretations.read_text(encoding="utf-8")
+    blocks = text.split("interpretation(")[1:]
+    if not blocks:
+        raise ValueError(f"no algebras in {interpretations}")
+    flags = ["<=(" in block for block in blocks]
+    if any(flags) and not all(flags):
+        raise ValueError(f"{interpretations} mixes algebras with and without <=")
+    return len(flags), flags[0]
+
+
+def _clause_for_algebra(formula: str, leq_is_relation: bool) -> str | None:
+    """Rebuild a saved ``=`` or ``<=`` formula as a clause the algebras can evaluate.
+
+    Without a ``<=`` symbol the order is the equation ``(x\\y) = (x\\y)\\(x\\y)``,
+    so cached inequalities are left for the equality partition to decide.
+    """
+    parsed = _formula_sides(formula)
+    if parsed is None:
+        return None
+    op, left, right = parsed
+    if op == "<=":
+        if not leq_is_relation:
+            return None
+        return f"{left} <= {right}."
+    return f"{left} = {right}."
+
+
+def clauses_true_in_all(formulas: Sequence[str], interpretations: Path | str) -> list[bool]:
+    """Evaluate each clause in *formulas* against every algebra in the model file.
+
+    One ``clausetester`` run. Results are in the same order as *formulas*.
+    A clause is true when it holds in every interpretation.
+    """
+    if not formulas:
+        return []
+    path = Path(interpretations)
+    text = "".join(formula if formula.endswith("\n") else formula + "\n" for formula in formulas)
+    result = ClauseTester().run(input=text, interp_file=path)
+    if result.exit_code not in (0, None) or "Fatal error" in result.stdout or "Fatal error" in result.stderr:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"clausetester failed on {path}: {detail}")
+
+    n_interps = 0
+    rows: list[str] = []
+    for line in result.stdout.splitlines():
+        if line.startswith("% interp "):
+            index = line.removeprefix("% interp ").split(" ", 1)[0]
+            if index.isdigit():
+                n_interps = max(n_interps, int(index))
+            continue
+        if not line.strip() or line.startswith("%"):
+            continue
+        rows.append(line)
+    if n_interps == 0 or len(rows) != len(formulas):
+        raise RuntimeError(
+            f"clausetester returned {len(rows)} rows for {len(formulas)} clauses "
+            f"and {n_interps} algebras:\n{result.stdout}"
+        )
+    expected = set(range(1, n_interps + 1))
+    holds: list[bool] = []
+    for line in rows:
+        _formula, sep, tail = line.partition("  %")
+        if not sep:
+            raise RuntimeError(f"unexpected clausetester line: {line}")
+        found: set[int] = set()
+        for token in tail.split():
+            if not token.isdigit():
+                raise RuntimeError(f"unexpected clausetester line: {line}")
+            found.add(int(token))
+        if not found <= expected:
+            raise RuntimeError(f"unexpected model index in clausetester line: {line}")
+        holds.append(found == expected)
+    return holds
+
+
+def _try_apply_pending_lookups_in_algebras(
+    pending: list[str],
+    order: TermPartialOrder,
+    interpretations: Path,
+    leq_is_relation: bool,
+    progress: bool,
+) -> int:
+    """Apply cached formulas that hold in every algebra and whose sides exist.
+
+    Formulas the algebras falsify are dropped, so a cache from a larger variety
+    cannot collapse classes the models keep apart.
+    """
+    ready: list[str] = []
+    remaining: list[str] = []
+    for formula in pending:
+        parsed = _formula_sides(formula)
+        if parsed is None:
+            continue
+        op, left, right = parsed
+        if op == "<=" and not leq_is_relation:
+            continue
+        if left not in order or right not in order:
+            remaining.append(formula)
+            continue
+        ready.append(formula)
+    pending.clear()
+    pending.extend(remaining)
+    if not ready:
+        return 0
+    clauses: list[str] = []
+    checkable: list[str] = []
+    for formula in ready:
+        clause = _clause_for_algebra(formula, leq_is_relation)
+        if clause is None:
+            continue
+        checkable.append(formula)
+        clauses.append(clause)
+    holds = clauses_true_in_all(clauses, interpretations)
+    applied = 0
+    for formula, ok in zip(checkable, holds):
+        if not ok:
+            if progress:
+                print(f"  Cached statement fails in the algebras: {formula}")
+            continue
+        _apply_proven_formula(formula, order)
+        applied += 1
+    return applied
+
+
+def _open_pairs(
+    pairs: Iterable[tuple[str, str]],
+    order: TermPartialOrder,
+) -> list[tuple[str, str]]:
+    """Representative pairs whose order is not already known."""
+    chosen: list[tuple[str, str]] = []
+    seen: set[frozenset[str]] = set()
+    for left, right in pairs:
+        if order.find(left) != left or order.find(right) != right:
+            continue
+        if left == right or order.known_unequal(left, right):
+            continue
+        if order.known_less_than(left, right) or order.known_less_than(right, left):
+            continue
+        key = frozenset((left, right))
+        if key in seen:
+            continue
+        seen.add(key)
+        chosen.append((left, right))
+    return chosen
+
+
+def _apply_algebra_equalities(
+    chosen: Sequence[tuple[str, str]],
+    eq_true: Sequence[bool],
+    order: TermPartialOrder,
+    save_axiom: Callable[[str], None],
+) -> int:
+    """Union the pairs whose equation holds in every algebra."""
+    n_eq = 0
+    for (left, right), ok in zip(chosen, eq_true):
+        if not ok:
+            continue
+        left, right = order.find(left), order.find(right)
+        if left == right:
+            continue
+        save_axiom(f"{left} = {right}.")
+        order.union(left, right)
+        n_eq += 1
+    return n_eq
+
+
+def _mark_undecided_unequal(
+    chosen: Sequence[tuple[str, str]],
+    order: TermPartialOrder,
+) -> None:
+    """Remember that pairs not identified by an equation stay distinct."""
+    seen: set[frozenset[str]] = set()
+    for left, right in chosen:
+        left, right = order.find(left), order.find(right)
+        if left == right or order.known_unequal(left, right):
+            continue
+        if order.known_less_than(left, right) or order.known_less_than(right, left):
+            continue
+        key = frozenset((left, right))
+        if key in seen:
+            continue
+        seen.add(key)
+        order.mark_unequal(left, right)
+
+
+def _decide_pairs_in_algebras(
+    pairs: Iterable[tuple[str, str]],
+    order: TermPartialOrder,
+    interpretations: Path,
+    leq_is_relation: bool,
+    save_axiom: Callable[[str], None],
+    progress: bool,
+) -> None:
+    """Decide every still-open pair by one batched evaluation in the algebras.
+
+    Equalities are always sent. Both inequality directions are sent in the same
+    run only when the algebras have a ``<=`` symbol. Otherwise the order is the
+    residual equation and is recovered from the equality partition at the end.
+    """
+    chosen = _open_pairs(pairs, order)
+    if not chosen:
+        return
+    clauses = [f"{left} = {right}." for left, right in chosen]
+    if leq_is_relation:
+        clauses.extend(f"{left} <= {right}." for left, right in chosen)
+        clauses.extend(f"{right} <= {left}." for left, right in chosen)
+    holds = clauses_true_in_all(clauses, interpretations)
+    n = len(chosen)
+    eq_true = holds[:n]
+    if not leq_is_relation:
+        n_eq = _apply_algebra_equalities(chosen, eq_true, order, save_axiom)
+        _mark_undecided_unequal(chosen, order)
+        if progress:
+            print(f"  Algebras: {n} pairs, {n_eq} identities")
+        return
+    le_true = holds[n : 2 * n]
+    ge_true = holds[2 * n :]
+
+    n_eq = _apply_algebra_equalities(chosen, eq_true, order, save_axiom)
+
+    # Several pairs can fall into the same classes once identities are applied.
+    # Keep a direction if any of those pairs witnessed it, and fold (a, b)
+    # together with (b, a).
+    directions: dict[tuple[str, str], tuple[bool, bool]] = {}
+    for (left, right), less, greater in zip(chosen, le_true, ge_true):
+        left, right = order.find(left), order.find(right)
+        if left == right:
+            continue
+        if (right, left) in directions:
+            prev_less, prev_greater = directions[(right, left)]
+            directions[(right, left)] = (prev_less or greater, prev_greater or less)
+            continue
+        prev_less, prev_greater = directions.get((left, right), (False, False))
+        directions[(left, right)] = (prev_less or less, prev_greater or greater)
+
+    n_le = 0
+    n_ge = 0
+    for (left, right), (less, greater) in directions.items():
+        if order.known_unequal(left, right):
+            continue
+        if order.known_less_than(left, right) or order.known_less_than(right, left):
+            continue
+        if less and greater:
+            save_axiom(f"{left} = {right}.")
+            order.union(left, right)
+            n_eq += 1
+            continue
+        order.mark_unequal(left, right)
+        if less:
+            save_axiom(f"{left} <= {right}.")
+            order.add_less_than(left, right)
+            n_le += 1
+        elif greater:
+            save_axiom(f"{right} <= {left}.")
+            order.add_less_than(right, left)
+            n_ge += 1
+    if progress:
+        print(
+            f"  Algebras: {n} pairs, {n_eq} identities, "
+            f"{n_le} less-than, {n_ge} greater-than"
+        )
+
+
+def _record_residual_order(order: TermPartialOrder, operations: Sequence[Operation]) -> int:
+    """Add ``left <= right`` whenever ``(left \\ right)`` is already known to be idempotent.
+
+    Does not write inequalities. The comparison is the equation
+    ``(left \\ right) = (left \\ right) \\ (left \\ right)`` inside the partition.
+    """
+    arrow = next((op for op in operations if op.symbol == "\\" and op.arity == 2), None)
+    if arrow is None:
+        return 0
+    reps = list(order.representatives())
+    recorded = 0
+    for left, right in itertools.product(reps, repeat=2):
+        if left == right or order.known_less_than(left, right):
+            continue
+        residual = arrow((left, right))
+        if residual not in order:
+            continue
+        # The square is generated from class representatives, not from a longer
+        # term that has already been identified with its representative.
+        residual = order.find(residual)
+        squared = arrow((residual, residual))
+        if squared not in order or order.find(squared) != residual:
+            continue
+        order.add_less_than(left, right)
+        recorded += 1
+    return recorded
+
+
 def _known_operation_result(
     order: TermEquivalence,
     operation: Operation,
@@ -724,14 +1017,15 @@ async def classify_term_order(
     max_level: int,
     axioms: list[str],
     equivalence_classes: TermPartialOrder,
-    mace4: Mace4,
-    prover9: Prover9,
+    mace4: Mace4 | None,
+    prover9: Prover9 | None,
     save_axiom: Callable[[str], None],
     save_unknown: Callable[[str], None],
     progress: bool = False,
     pending_lookup: list[str] | None = None,
     tptp_provers: Sequence[TptpProverSpec] | None = None,
     tptp_timeout_s: float | None = None,
+    algebras: Path | str | None = None,
 ) -> None:
     """Classify the free-algebra order by expanding a pruned pool of representatives.
 
@@ -745,7 +1039,32 @@ async def classify_term_order(
     If *pending_lookup* is non-empty, stored formulas are applied only once both
     sides have appeared among generated terms, so obsolete terms from an older
     axiom file never become Hasse nodes by themselves.
+
+    If *algebras* is a Mace4 model file, identities are decided by evaluating
+    each level's candidate pairs in those algebras (one ``clausetester`` run
+    per level) instead of :func:`decide`. ``mace4`` and ``prover9`` may be
+    omitted in that case. Cached formulas are kept only when they hold in
+    every algebra in the file. When those algebras have no ``<=`` symbol, only
+    equations are evaluated and saved; the order is read afterwards from the
+    equation ``(x\\y) = (x\\y)\\(x\\y)``.
     """
+
+    algebras_path = Path(algebras) if algebras is not None else None
+    if algebras_path is not None:
+        if not algebras_path.is_file():
+            raise FileNotFoundError(f"model file not found: {algebras_path}")
+        n_algebras, leq_is_relation = _algebras_have_leq(algebras_path)
+        if progress:
+            if leq_is_relation:
+                order_note = "<= is a symbol of the algebras"
+            else:
+                order_note = r"order follows from (x\y) = (x\y)\(x\y) and is not saved"
+            noun = "algebra" if n_algebras == 1 else "algebras"
+            print(f"Evaluating identities in {n_algebras} {noun} ({order_note})")
+    elif mace4 is None or prover9 is None:
+        raise ValueError("mace4 and prover9 are required when algebras is not given")
+    else:
+        leq_is_relation = False
 
     pending = pending_lookup if pending_lookup is not None else []
 
@@ -760,7 +1079,16 @@ async def classify_term_order(
         return out
 
     def apply_lookups() -> None:
-        n = _try_apply_pending_lookups(pending, equivalence_classes)
+        if algebras_path is not None:
+            n = _try_apply_pending_lookups_in_algebras(
+                pending,
+                equivalence_classes,
+                algebras_path,
+                leq_is_relation,
+                progress,
+            )
+        else:
+            n = _try_apply_pending_lookups(pending, equivalence_classes)
         if progress and n:
             print(f"  Applied {n} looked-up statement{'s' if n != 1 else ''}")
 
@@ -772,6 +1100,7 @@ async def classify_term_order(
         if equivalence_classes.known_less_than(left, right) or equivalence_classes.known_less_than(right, left):
             return
         po = PartialOrderVerdict.UNKNOWN
+        assert mace4 is not None and prover9 is not None
         theory = Theory(assumptions=axioms, goals=[f"{left} = {right}."])
         verdict = await decide(
             theory.to_theory_text(),
@@ -824,38 +1153,57 @@ async def classify_term_order(
             equivalence_classes.add_less_than(right, left)
 
     async def classify_pairs(pairs: Iterable[tuple[str, str]]) -> None:
+        if algebras_path is not None:
+            _decide_pairs_in_algebras(
+                pairs,
+                equivalence_classes,
+                algebras_path,
+                leq_is_relation,
+                save_axiom,
+                progress,
+            )
+            return
         for left, right in pairs:
             if equivalence_classes.find(left) != left or equivalence_classes.find(right) != right:
                 continue
             await classify_pair(left, right)
 
-    pool = live(seed_terms(operations, variables))
-    apply_lookups()
-    pool = live(pool)
-    if progress:
-        print(f"Level 0: {len(pool)} terms")
-    await classify_pairs(itertools.combinations(pool, 2))
-    pool = live(pool)
-
-    for level in range(1, max_level + 1):
-        candidates = expand_terms(operations, pool)
-        for term in candidates:
-            equivalence_classes.add(term)
+    try:
+        pool = live(seed_terms(operations, variables))
         apply_lookups()
-        new_terms = [term for term in candidates if equivalence_classes.find(term) == term]
-        if not new_terms:
-            print(f"No new terms at level {level}; terminating.")
-            return
-        prev = list(pool)
-        await classify_pairs(
-            itertools.chain(
-                itertools.product(new_terms, prev),
-                itertools.combinations(new_terms, 2),
-            )
-        )
-        pool = live(prev + new_terms)
+        pool = live(pool)
         if progress:
-            print(f"Level {level}: {len(pool)} terms")
+            print(f"Level 0: {len(pool)} terms")
+        await classify_pairs(itertools.combinations(pool, 2))
+        pool = live(pool)
+
+        for level in range(1, max_level + 1):
+            candidates = expand_terms(operations, pool)
+            for term in candidates:
+                equivalence_classes.add(term)
+            apply_lookups()
+            new_terms = [term for term in candidates if equivalence_classes.find(term) == term]
+            if not new_terms:
+                print(f"No new terms at level {level}; terminating.")
+                return
+            prev = list(pool)
+            await classify_pairs(
+                itertools.chain(
+                    itertools.product(new_terms, prev),
+                    itertools.combinations(new_terms, 2),
+                )
+            )
+            pool = live(prev + new_terms)
+            if progress:
+                print(f"Level {level}: {len(pool)} terms")
+    finally:
+        if algebras_path is not None and not leq_is_relation:
+            recorded = _record_residual_order(equivalence_classes, operations)
+            if progress and recorded:
+                print(
+                    f"  Order from equalities: {recorded} "
+                    f"comparison{'s' if recorded != 1 else ''}"
+                )
 
 
 def write_free_algebra_pdf(

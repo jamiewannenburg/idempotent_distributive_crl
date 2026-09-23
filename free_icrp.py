@@ -25,6 +25,15 @@ if __name__ == "__main__":
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("-o", "--output", type=str, default="output/free_icrp.pdf")
     parser.add_argument(
+        "--models",
+        type=str,
+        default=None,
+        help=(
+            "Mace4 model file. Decide identities by evaluation in these algebras "
+            "instead of Prover9/Mace4."
+        ),
+    )
+    parser.add_argument(
         "--axioms",
         type=str,
         default="input/free_icrp_axioms.txt",
@@ -99,25 +108,33 @@ if __name__ == "__main__":
         r"((((x \ y) \ y) \ x) \ x) = ((((((x \ y) \ y) \ x) \ x) \ y) \ y).",
         r"((((x \ y) \ y) \ x) \ x) = ((((x \ y) \ y) \ x) \ ((x \ y) \ y)).",
         ])
-    print("\n".join(axioms))
-    m4_timeout = args.timeout
-    m4_options = Mace4CliOptions(max_seconds=m4_timeout,max_models=1)
-    p9_timeout = args.timeout
-    p9_options = Prover9CliOptions(max_seconds=p9_timeout)
-
     equivalence_classes = TermPartialOrder()
-    mace4 = Mace4(options=m4_options, timeout_s=m4_timeout)
-    prover9 = Prover9(options=p9_options, timeout_s=p9_timeout)
-
-    if args.no_tptp:
+    algebras = Path(args.models) if args.models else None
+    if algebras is not None:
+        if not algebras.is_file():
+            parser.error(f"model file not found: {algebras}")
+        print(f"Deciding identities by evaluation in {algebras}")
+        mace4 = None
+        prover9 = None
         tptp_provers = []
-    elif args.tptp_provers.strip().lower() == "auto":
-        tptp_provers = discover_tptp_provers()
     else:
-        names = [part.strip() for part in args.tptp_provers.split(",")]
-        tptp_provers = discover_tptp_provers(include=names)
-    raced = ["mace4", "prover9", *[p.name for p in tptp_provers]]
-    print(f"Racing solvers: {', '.join(raced)}")
+        print("\n".join(axioms))
+        m4_timeout = args.timeout
+        m4_options = Mace4CliOptions(max_seconds=m4_timeout, max_models=1)
+        p9_timeout = args.timeout
+        p9_options = Prover9CliOptions(max_seconds=p9_timeout)
+        mace4 = Mace4(options=m4_options, timeout_s=m4_timeout)
+        prover9 = Prover9(options=p9_options, timeout_s=p9_timeout)
+
+        if args.no_tptp:
+            tptp_provers = []
+        elif args.tptp_provers.strip().lower() == "auto":
+            tptp_provers = discover_tptp_provers()
+        else:
+            names = [part.strip() for part in args.tptp_provers.split(",")]
+            tptp_provers = discover_tptp_provers(include=names)
+        raced = ["mace4", "prover9", *[p.name for p in tptp_provers]]
+        print(f"Racing solvers: {', '.join(raced)}")
 
     input_dir = Path("input")
     input_dir.mkdir(parents=True, exist_ok=True)
@@ -142,7 +159,12 @@ if __name__ == "__main__":
             pending_lookup.append(formula)
             if not args.lookup_only and formula not in axioms:
                 axioms.append(formula)
-        if args.lookup_only:
+        if algebras is not None:
+            print(
+                f"Queued {loaded} proven statements from {axioms_path} "
+                f"for lookup when generated (kept only if they hold in the algebras)"
+            )
+        elif args.lookup_only:
             print(
                 f"Queued {loaded} proven statements from {axioms_path} "
                 f"for lookup when generated (not added as axioms)"
@@ -188,6 +210,7 @@ if __name__ == "__main__":
                 pending_lookup=pending_lookup,
                 tptp_provers=tptp_provers,
                 tptp_timeout_s=float(args.timeout),
+                algebras=algebras,
             )
             await _drain_subprocess_transports()
         finally:
