@@ -177,6 +177,23 @@ if __name__ == "__main__":
 
     axioms_file = axioms_path.open("a", encoding="utf-8")
     unknown_file = unknown_path.open("w", encoding="utf-8")
+    incomparable_path = Path(str(axioms_path) + ".incomparable")
+    known_incomparable: set[str] = set()
+    if incomparable_path.exists():
+        loaded_incomparable = 0
+        for line in incomparable_path.read_text(encoding="utf-8").splitlines():
+            formula = line.strip()
+            if not formula or formula.startswith("%"):
+                continue
+            if not formula.endswith("."):
+                formula += "."
+            known_incomparable.add(formula)
+            pending_lookup.append(formula)
+            loaded_incomparable += 1
+        print(
+            f"Queued {loaded_incomparable} incomparable pairs from {incomparable_path}"
+        )
+    incomparable_file = incomparable_path.open("a", encoding="utf-8")
     unknowns: list[str] = []
 
     def save_axiom(formula: str) -> None:
@@ -188,8 +205,14 @@ if __name__ == "__main__":
             axioms_file.write(formula + "\n")
             axioms_file.flush()
 
+    def save_incomparable(formula: str) -> None:
+        if formula in known_incomparable:
+            return
+        known_incomparable.add(formula)
+        incomparable_file.write(formula + "\n")
+        incomparable_file.flush()
+
     def save_unknown(formula: str) -> None:
-        print(f"  {formula} undecided")
         unknowns.append(formula)
         unknown_file.write(formula + "\n")
         unknown_file.flush()
@@ -211,11 +234,13 @@ if __name__ == "__main__":
                 tptp_provers=tptp_provers,
                 tptp_timeout_s=float(args.timeout),
                 algebras=algebras,
+                save_incomparable=save_incomparable,
             )
             await _drain_subprocess_transports()
         finally:
             axioms_file.close()
             unknown_file.close()
+            incomparable_file.close()
             if pending_lookup:
                 print(
                     f"{len(pending_lookup)} queued statement(s) unused "
@@ -229,6 +254,8 @@ if __name__ == "__main__":
             axioms_file.close()
         if not unknown_file.closed:
             unknown_file.close()
+        if not incomparable_file.closed:
+            incomparable_file.close()
         write_free_algebra_pdf(equivalence_classes, unknowns, args.output, operations, "ICRP")
     if not completed:
         sys.exit(130)

@@ -2,6 +2,7 @@ import asyncio
 import gc
 import itertools
 import logging
+import re
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from enum import Enum
@@ -52,30 +53,68 @@ class Operation:
         elif self.type == OperationType.POSTFIX:
             return f"({','.join(arguments)}){self.symbol}"
 
-def expand_terms(operations: list[Operation], current: Sequence[str]) -> list[str]:
-    """Apply each operation once to *current*, returning newly formed terms.
+def _argument_tuples(
+    operation: Operation,
+    pool: Sequence[str],
+    frontier: set[str] | None,
+) -> Iterator[tuple[str, ...]]:
+    """Argument tuples from *pool*.
 
-    Commutative and idempotent operations use unordered argument tuples, matching
-    ``terms``. The input sequence is not modified.
+    When *frontier* is given, skip tuples whose arguments all lie outside it.
+    Those tuples were already formed at an earlier level.
     """
-    ts = list(current)
-    seen = set(ts)
-    new_terms: list[str] = []
+    if operation.arity <= 0:
+        return
+    if operation.commutative and operation.idempotent:
+        arg_iter: Iterable[tuple[str, ...]] = itertools.combinations(pool, operation.arity)
+    elif operation.commutative:
+        arg_iter = itertools.combinations_with_replacement(pool, operation.arity)
+    else:
+        arg_iter = itertools.product(pool, repeat=operation.arity)
+    for args in arg_iter:
+        if frontier is not None and not any(arg in frontier for arg in args):
+            continue
+        yield args
+
+
+def expand_applications(
+    operations: Sequence[Operation],
+    current: Sequence[str],
+    frontier: Sequence[str] | None = None,
+) -> list[tuple[str, Operation, tuple[str, ...]]]:
+    """New operation applications on *current*.
+
+    Each item is ``(term, operation, arguments)``. If *frontier* is given, at
+    least one argument comes from it, so products of older elements are not
+    built again. The input sequence is not modified.
+    """
+    pool = list(current)
+    frontier_set = None if frontier is None else set(frontier)
+    seen = set(pool)
+    found: list[tuple[str, Operation, tuple[str, ...]]] = []
     for operation in operations:
         if operation.arity <= 0:
             continue
-        if operation.commutative and operation.idempotent:
-            arg_iter: Iterable[tuple[str, ...]] = itertools.combinations(ts, operation.arity)
-        elif operation.commutative:
-            arg_iter = itertools.combinations_with_replacement(ts, operation.arity)
-        else:
-            arg_iter = itertools.product(ts, repeat=operation.arity)
-        for args in arg_iter:
+        for args in _argument_tuples(operation, pool, frontier_set):
             new_term = operation(args)
-            if new_term not in seen:
-                seen.add(new_term)
-                new_terms.append(new_term)
-    return new_terms
+            if new_term in seen:
+                continue
+            seen.add(new_term)
+            found.append((new_term, operation, args))
+    return found
+
+
+def expand_terms(
+    operations: list[Operation],
+    current: Sequence[str],
+    frontier: Sequence[str] | None = None,
+) -> list[str]:
+    """Apply each operation once, returning newly formed term strings.
+
+    Commutative and idempotent operations use unordered argument tuples, matching
+    ``terms``. Pass *frontier* to skip combinations already formed from older terms.
+    """
+    return [term for term, _operation, _args in expand_applications(operations, current, frontier)]
 
 
 def seed_terms(operations: list[Operation], variables: Sequence[str]) -> list[str]:
@@ -91,13 +130,15 @@ def seed_terms(operations: list[Operation], variables: Sequence[str]) -> list[st
 def terms(operations: list[Operation], variables: list[str], max_level: int = 10, progress: bool = False) -> Iterator[str]:
     ts = seed_terms(operations, variables)
     yield from ts
+    frontier = list(ts)
     level = 0
     if progress:
         print(f"Level {level}: {len(ts)} terms")
     while level < max_level:
-        new_terms = expand_terms(operations, ts)
+        new_terms = expand_terms(operations, ts, frontier)
         ts.extend(new_terms)
         yield from new_terms
+        frontier = new_terms
         level += 1
         if progress:
             print(f"Level {level}: {len(ts)} terms")
@@ -146,40 +187,46 @@ class PartialOrderVerdict(Enum):
 
 
 class TermEquivalence:
-    """Union-find partition of terms proven equal, with inequalities on class roots.
+    """Union-find of terms proven equal.
 
     Each class is named by a choice-function representative: the shortest term,
-    breaking ties by insertion order. ``find`` always returns that representative,
-    so later identities only change a class name when two classes merge.
+    breaking ties by insertion order. ``find`` returns that representative.
 
-    Proven identities are closed under transitivity. A counterexample between two
-    terms is recorded on their current roots, so later members of those classes
-    are treated as already distinguished.
+    Only representatives stay in the partition. A term that has been identified
+    with a shorter one is kept as an alias until :meth:`forget_non_representatives`
+    drops it. Callers that still need the identification should read the
+    operation table instead of the alias.
     """
 
     def __init__(self) -> None:
         self._parent: dict[str, str] = {}
         self._birth: dict[str, int] = {}
         self._next_birth = 0
+        self._alias: dict[str, str] = {}
         self._unequal: set[frozenset[str]] = set()
 
     def add(self, x: str) -> None:
-        if x not in self._parent:
-            self._parent[x] = x
-            self._birth[x] = self._next_birth
-            self._next_birth += 1
+        if x in self._alias or x in self._parent:
+            return
+        self._parent[x] = x
+        self._birth[x] = self._next_birth
+        self._next_birth += 1
 
     def __contains__(self, x: object) -> bool:
-        return isinstance(x, str) and x in self._parent
+        return isinstance(x, str) and (x in self._parent or x in self._alias)
 
     def _choice_key(self, x: str) -> tuple[int, int, str]:
         return (len(x), self._birth[x], x)
 
     def representatives(self) -> list[str]:
         """Canonical class names, shortest first (then insertion order)."""
-        return sorted({self.find(x) for x in self._parent}, key=self._choice_key)
+        return sorted((x for x in self._parent if self._parent[x] == x), key=self._choice_key)
 
     def find(self, x: str) -> str:
+        if x in self._alias:
+            root = self.find(self._alias[x])
+            self._alias[x] = root
+            return root
         self.add(x)
         while self._parent[x] != x:
             self._parent[x] = self._parent[self._parent[x]]
@@ -202,16 +249,24 @@ class TermEquivalence:
         if self._choice_key(ry) < self._choice_key(rx):
             rx, ry = ry, rx
         self._parent[ry] = rx
+        self._unequal = self._rewrite_pairs(self._unequal, rx, ry)
+        self._on_merged(rx, ry)
+
+    def _rewrite_pairs(
+        self,
+        pairs: set[frozenset[str]],
+        survivor: str,
+        absorbed: str,
+    ) -> set[frozenset[str]]:
         rewritten: set[frozenset[str]] = set()
-        for pair in self._unequal:
-            if ry not in pair:
+        for pair in pairs:
+            if absorbed not in pair:
                 rewritten.add(pair)
                 continue
-            other = next(iter(pair - {ry}))
-            if other != rx:
-                rewritten.add(frozenset((rx, other)))
-        self._unequal = rewritten
-        self._on_merged(rx, ry)
+            other = next(iter(pair - {absorbed}))
+            if other != survivor:
+                rewritten.add(frozenset((survivor, other)))
+        return rewritten
 
     def _on_merged(self, survivor: str, absorbed: str) -> None:
         """Hook for subclasses that index data by canonical representatives."""
@@ -221,84 +276,198 @@ class TermEquivalence:
         if rx != ry:
             self._unequal.add(frozenset((rx, ry)))
 
+    def forget_non_representatives(self, keep: set[str] | None = None) -> int:
+        """Drop absorbed terms that are not class names.
+
+        *keep* holds strings that a later lookup may still mention. The
+        operation table already records products of representatives, so the
+        other absorbed strings are not needed to extend the algebra.
+        """
+        keep = keep or set()
+        removed = 0
+        for term in list(self._parent):
+            if self._parent[term] == term or term in keep:
+                continue
+            root = self.find(term)
+            del self._parent[term]
+            self._birth.pop(term, None)
+            removed += 1
+        return removed
+
     def classes(self) -> list[set[str]]:
         groups: dict[str, set[str]] = {}
         for x in self._parent:
             groups.setdefault(self.find(x), set()).add(x)
         return [groups[rep] for rep in sorted(groups, key=self._choice_key)]
 
-class TermPartialOrder(TermEquivalence):
-    """Equivalence classes with a Hasse diagram on their canonical representatives.
 
-    An edge ``u -> v`` means the class of ``u`` is strictly below the class of
-    ``v``. Edges are stored between current representatives; when two classes
-    merge, incident edges are moved onto the surviving representative so the
-    order relation is preserved.
+class TermPartialOrder(TermEquivalence):
+    """Equivalence classes with a strict order on their representatives.
+
+    ``_above[a]`` is the set of representatives strictly above ``a``. That is
+    the transitive closure, stored directly so a comparison does not search a
+    graph. The Hasse diagram is the covering relation of this closure and is
+    built only when the picture is drawn.
+
+    ``_incomparable`` holds pairs known to be incomparable. A pair that is
+    merely not yet decided is in neither the order nor this set. ``_separator``
+    stores one model index that separates the two classes, used to label
+    covering edges.
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self._partial_order: nx.DiGraph = nx.DiGraph()
+        self._above: dict[str, set[str]] = {}
+        self._incomparable: set[frozenset[str]] = set()
+        self._separator: dict[frozenset[str], int] = {}
+        self._products: dict[tuple[str, tuple[str, ...]], str] = {}
+
+    def add(self, x: str) -> None:
+        if x in self._alias or x in self._parent:
+            return
+        super().add(x)
+        self._above[x] = set()
 
     @property
     def hasse(self) -> nx.DiGraph:
         """Covering graph whose nodes are the current class representatives."""
-        return self._partial_order
+        graph = nx.DiGraph()
+        graph.add_nodes_from(self.representatives())
+        graph.add_edges_from(self.cover_edges())
+        return graph
 
-    def add(self, x: str) -> None:
-        existed = x in self._parent
-        super().add(x)
-        if not existed:
-            self._partial_order.add_node(x)
+    def cover_edges(self) -> list[tuple[str, str]]:
+        """Pairs ``(lower, upper)`` with nothing strictly between them."""
+        covers: list[tuple[str, str]] = []
+        for lower, above in self._above.items():
+            if self._parent.get(lower) != lower:
+                continue
+            for upper in above:
+                if any(upper in self._above.get(mid, ()) for mid in above if mid != upper):
+                    continue
+                covers.append((lower, upper))
+        return covers
+
+    def _strictly_ordered(self, pair: frozenset[str]) -> bool:
+        left, right = tuple(pair)
+        return right in self._above.get(left, ()) or left in self._above.get(right, ())
+
+    def known_incomparable(self, x: str, y: str) -> bool:
+        rx, ry = self.find(x), self.find(y)
+        if rx == ry:
+            return False
+        return frozenset((rx, ry)) in self._incomparable
+
+    def mark_incomparable(self, x: str, y: str) -> None:
+        """Record that the two classes are distinct and neither is below the other."""
+        rx, ry = self.find(x), self.find(y)
+        if rx == ry or self.known_less_than(rx, ry) or self.known_less_than(ry, rx):
+            return
+        self.mark_unequal(rx, ry)
+        self._incomparable.add(frozenset((rx, ry)))
+
+    def note_separator(self, x: str, y: str, model: int | None) -> None:
+        """Remember one model index that separates the two classes."""
+        if model is None:
+            return
+        rx, ry = self.find(x), self.find(y)
+        if rx == ry:
+            return
+        self._separator.setdefault(frozenset((rx, ry)), model)
+
+    def separator(self, x: str, y: str) -> int | None:
+        rx, ry = self.find(x), self.find(y)
+        return self._separator.get(frozenset((rx, ry)))
+
+    def record_product(self, symbol: str, arguments: Sequence[str], result: str) -> None:
+        """Remember ``symbol(arguments)`` as the class of *result*."""
+        key = (symbol, tuple(self.find(arg) for arg in arguments))
+        self._products[key] = self.find(result)
+
+    def product(self, symbol: str, arguments: Sequence[str]) -> str | None:
+        """Representative of a recorded product, if both the arguments and the result are known."""
+        if any(arg not in self for arg in arguments):
+            return None
+        key = (symbol, tuple(self.find(arg) for arg in arguments))
+        found = self._products.get(key)
+        if found is None:
+            return None
+        return self.find(found)
 
     def _on_merged(self, survivor: str, absorbed: str) -> None:
-        G = self._partial_order
-        G.add_node(survivor)
-        if absorbed not in G or absorbed == survivor:
-            return
-        for pred in list(G.predecessors(absorbed)):
-            if pred != survivor:
-                G.add_edge(pred, survivor)
-        for succ in list(G.successors(absorbed)):
-            if succ != survivor:
-                G.add_edge(survivor, succ)
-        G.remove_node(absorbed)
-        self._reduce()
+        above_absorbed = self._above.pop(absorbed, set())
+        above_absorbed.discard(survivor)
+        below_absorbed = [node for node, above in self._above.items() if absorbed in above]
+        for above in self._above.values():
+            if absorbed in above:
+                above.discard(absorbed)
+                above.add(survivor)
+        survivor_above = self._above.setdefault(survivor, set())
+        survivor_above.update(above_absorbed)
+        survivor_above.discard(survivor)
+        upper = set(survivor_above)
+        for node in below_absorbed:
+            if node == survivor:
+                continue
+            self._above[node].update(upper)
+            self._above[node].discard(node)
+        for node, above in self._above.items():
+            if survivor in above:
+                above.update(upper)
+                above.discard(node)
+        rewritten_incomparable = self._rewrite_pairs(self._incomparable, survivor, absorbed)
+        self._incomparable = {
+            pair
+            for pair in rewritten_incomparable
+            if not self._strictly_ordered(pair)
+        }
+        rewritten: dict[frozenset[str], int] = {}
+        for pair, model in self._separator.items():
+            if absorbed not in pair:
+                rewritten.setdefault(pair, model)
+                continue
+            other = next(iter(pair - {absorbed}))
+            if other != survivor:
+                rewritten.setdefault(frozenset((survivor, other)), model)
+        self._separator = rewritten
+        rewritten_products: dict[tuple[str, tuple[str, ...]], str] = {}
+        for (symbol, args), result in self._products.items():
+            args = tuple(survivor if arg == absorbed else arg for arg in args)
+            if result == absorbed:
+                result = survivor
+            rewritten_products.setdefault((symbol, args), result)
+        self._products = rewritten_products
 
     def add_less_than(self, x: str, y: str) -> None:
         """Record that the class of ``x`` is strictly below the class of ``y``."""
         rx, ry = self.find(x), self.find(y)
         if rx == ry:
             return
-        G = self._partial_order
-        G.add_nodes_from((rx, ry))
-        if nx.has_path(G, rx, ry):
+        if ry in self._above.get(rx, ()):
             return
-        if nx.has_path(G, ry, rx):
+        if rx in self._above.get(ry, ()):
             self.union(x, y)
             return
-        G.add_edge(rx, ry)
+        gained = {ry} | self._above.get(ry, set())
+        sources = [rx]
+        for node, above in self._above.items():
+            if rx in above:
+                sources.append(node)
+        for source in sources:
+            bucket = self._above.setdefault(source, set())
+            bucket.update(gained)
+            bucket.discard(source)
+        self._incomparable.discard(frozenset((rx, ry)))
         self.mark_unequal(rx, ry)
-        self._reduce()
 
     def known_less_than(self, x: str, y: str) -> bool:
         rx, ry = self.find(x), self.find(y)
         if rx == ry:
             return False
-        G = self._partial_order
-        return rx in G and ry in G and nx.has_path(G, rx, ry)
+        return ry in self._above.get(rx, ())
 
     def known_leq(self, x: str, y: str) -> bool:
         return self.same(x, y) or self.known_less_than(x, y)
-
-    def _reduce(self) -> None:
-        G = self._partial_order
-        if G.number_of_edges() == 0:
-            return
-        nodes = list(G.nodes())
-        reduced = nx.transitive_reduction(G)
-        reduced.add_nodes_from(nodes)
-        self._partial_order = reduced
 
 async def _stop_job(job: Any) -> None:
     """Cancel a Mace4/Prover9 job and wait until its subprocess has actually exited."""
@@ -475,25 +644,46 @@ def _formula_body(formula: str) -> str:
 
 
 def _formula_sides(formula: str) -> tuple[str, str, str] | None:
-    """Return ``(op, left, right)`` for a saved ``=`` or ``<=`` formula."""
+    """Return ``(op, left, right)`` for a saved ``=``, ``<=``, or ``|`` formula.
+
+    ``|`` means the two sides are known to be incomparable.
+    """
     body = _formula_body(formula)
     if "<=" in body:
         left, right = body.split("<=", 1)
         return ("<=", left.strip(), right.strip())
+    if "|" in body:
+        left, right = body.split("|", 1)
+        return ("|", left.strip(), right.strip())
     if "=" in body:
         left, right = body.split("=", 1)
         return ("=", left.strip(), right.strip())
     return None
 
 
+def _pending_mentions(pending: Sequence[str]) -> set[str]:
+    """Terms named by lookups that have not been applied yet."""
+    mentioned: set[str] = set()
+    for formula in pending:
+        parsed = _formula_sides(formula)
+        if parsed is None:
+            continue
+        _op, left, right = parsed
+        mentioned.add(left)
+        mentioned.add(right)
+    return mentioned
+
+
 def _apply_proven_formula(formula: str, order: TermPartialOrder) -> None:
-    """Replay a saved identity or inequality into the running partial order."""
+    """Replay a saved identity, inequality, or incomparability into the order."""
     parsed = _formula_sides(formula)
     if parsed is None:
         return
     op, left, right = parsed
     if op == "<=":
         order.add_less_than(left, right)
+    elif op == "|":
+        order.mark_incomparable(left, right)
     else:
         order.union(left, right)
 
@@ -552,6 +742,8 @@ def _clause_for_algebra(formula: str, leq_is_relation: bool) -> str | None:
     if parsed is None:
         return None
     op, left, right = parsed
+    if op == "|":
+        return None
     if op == "<=":
         if not leq_is_relation:
             return None
@@ -559,11 +751,15 @@ def _clause_for_algebra(formula: str, leq_is_relation: bool) -> str | None:
     return f"{left} = {right}."
 
 
-def clauses_true_in_all(formulas: Sequence[str], interpretations: Path | str) -> list[bool]:
-    """Evaluate each clause in *formulas* against every algebra in the model file.
+def clause_checks(
+    formulas: Sequence[str],
+    interpretations: Path | str,
+) -> list[tuple[bool, int | None]]:
+    """Evaluate each clause against every algebra in the model file.
 
-    One ``clausetester`` run. Results are in the same order as *formulas*.
-    A clause is true when it holds in every interpretation.
+    One ``clausetester`` run. Each result is ``(holds_in_all, one_failing_index)``.
+    The index is the 1-based interpretation number of one algebra where the
+    clause fails, or ``None`` when the clause holds everywhere.
     """
     if not formulas:
         return []
@@ -591,7 +787,7 @@ def clauses_true_in_all(formulas: Sequence[str], interpretations: Path | str) ->
             f"and {n_interps} algebras:\n{result.stdout}"
         )
     expected = set(range(1, n_interps + 1))
-    holds: list[bool] = []
+    checks: list[tuple[bool, int | None]] = []
     for line in rows:
         _formula, sep, tail = line.partition("  %")
         if not sep:
@@ -603,8 +799,18 @@ def clauses_true_in_all(formulas: Sequence[str], interpretations: Path | str) ->
             found.add(int(token))
         if not found <= expected:
             raise RuntimeError(f"unexpected model index in clausetester line: {line}")
-        holds.append(found == expected)
-    return holds
+        missing = expected - found
+        checks.append((not missing, min(missing) if missing else None))
+    return checks
+
+
+def clauses_true_in_all(formulas: Sequence[str], interpretations: Path | str) -> list[bool]:
+    """Evaluate each clause in *formulas* against every algebra in the model file.
+
+    One ``clausetester`` run. Results are in the same order as *formulas*.
+    A clause is true when it holds in every interpretation.
+    """
+    return [holds for holds, _witness in clause_checks(formulas, interpretations)]
 
 
 def _try_apply_pending_lookups_in_algebras(
@@ -620,6 +826,7 @@ def _try_apply_pending_lookups_in_algebras(
     cannot collapse classes the models keep apart.
     """
     ready: list[str] = []
+    ready_incomparable: list[str] = []
     remaining: list[str] = []
     for formula in pending:
         parsed = _formula_sides(formula)
@@ -630,6 +837,9 @@ def _try_apply_pending_lookups_in_algebras(
             continue
         if left not in order or right not in order:
             remaining.append(formula)
+            continue
+        if op == "|":
+            ready_incomparable.append(formula)
             continue
         ready.append(formula)
     pending.clear()
@@ -646,6 +856,22 @@ def _try_apply_pending_lookups_in_algebras(
         clauses.append(clause)
     holds = clauses_true_in_all(clauses, interpretations)
     applied = 0
+    if ready_incomparable:
+        parsed_incomp = [_formula_sides(formula) for formula in ready_incomparable]
+        eq_checks = clause_checks(
+            [f"{left} = {right}." for _op, left, right in parsed_incomp if _op is not None],
+            interpretations,
+        )
+        for formula, (_op, left, right), (equal_everywhere, witness) in zip(
+            ready_incomparable, parsed_incomp, eq_checks
+        ):
+            if equal_everywhere:
+                if progress:
+                    print(f"  Cached incomparability fails in the algebras: {formula}")
+                continue
+            order.note_separator(left, right, witness)
+            order.mark_incomparable(left, right)
+            applied += 1
     for formula, ok in zip(checkable, holds):
         if not ok:
             if progress:
@@ -724,6 +950,7 @@ def _decide_pairs_in_algebras(
     leq_is_relation: bool,
     save_axiom: Callable[[str], None],
     progress: bool,
+    save_incomparable: Callable[[str], None] | None = None,
 ) -> None:
     """Decide every still-open pair by one batched evaluation in the algebras.
 
@@ -738,17 +965,21 @@ def _decide_pairs_in_algebras(
     if leq_is_relation:
         clauses.extend(f"{left} <= {right}." for left, right in chosen)
         clauses.extend(f"{right} <= {left}." for left, right in chosen)
-    holds = clauses_true_in_all(clauses, interpretations)
+    checks = clause_checks(clauses, interpretations)
     n = len(chosen)
-    eq_true = holds[:n]
+    eq_checks = checks[:n]
+    eq_true = [holds for holds, _witness in eq_checks]
+    for (left, right), (holds, witness) in zip(chosen, eq_checks):
+        if not holds:
+            order.note_separator(left, right, witness)
     if not leq_is_relation:
         n_eq = _apply_algebra_equalities(chosen, eq_true, order, save_axiom)
         _mark_undecided_unequal(chosen, order)
         if progress:
             print(f"  Algebras: {n} pairs, {n_eq} identities")
         return
-    le_true = holds[n : 2 * n]
-    ge_true = holds[2 * n :]
+    le_true = [holds for holds, _witness in checks[n : 2 * n]]
+    ge_true = [holds for holds, _witness in checks[2 * n :]]
 
     n_eq = _apply_algebra_equalities(chosen, eq_true, order, save_axiom)
 
@@ -779,7 +1010,6 @@ def _decide_pairs_in_algebras(
             order.union(left, right)
             n_eq += 1
             continue
-        order.mark_unequal(left, right)
         if less:
             save_axiom(f"{left} <= {right}.")
             order.add_less_than(left, right)
@@ -788,11 +1018,31 @@ def _decide_pairs_in_algebras(
             save_axiom(f"{right} <= {left}.")
             order.add_less_than(right, left)
             n_ge += 1
+        else:
+            order.mark_incomparable(left, right)
+            if save_incomparable is not None:
+                save_incomparable(f"{left} | {right}.")
     if progress:
         print(
             f"  Algebras: {n} pairs, {n_eq} identities, "
             f"{n_le} less-than, {n_ge} greater-than"
         )
+
+
+def _residual_leq(order: TermPartialOrder, left: str, right: str) -> bool | None:
+    """Whether ``(left \\ right)`` is known to be idempotent.
+
+    ``None`` means the residual or its square has not been generated yet, so
+    the comparison is still open. A stored product is enough; the term string
+    does not have to remain in the partition.
+    """
+    residual = order.product("\\", (left, right))
+    if residual is None:
+        return None
+    squared = order.product("\\", (residual, residual))
+    if squared is None:
+        return None
+    return squared == residual
 
 
 def _record_residual_order(order: TermPartialOrder, operations: Sequence[Operation]) -> int:
@@ -801,26 +1051,71 @@ def _record_residual_order(order: TermPartialOrder, operations: Sequence[Operati
     Does not write inequalities. The comparison is the equation
     ``(left \\ right) = (left \\ right) \\ (left \\ right)`` inside the partition.
     """
-    arrow = next((op for op in operations if op.symbol == "\\" and op.arity == 2), None)
-    if arrow is None:
+    if not any(op.symbol == "\\" and op.arity == 2 for op in operations):
         return 0
     reps = list(order.representatives())
     recorded = 0
     for left, right in itertools.product(reps, repeat=2):
         if left == right or order.known_less_than(left, right):
             continue
-        residual = arrow((left, right))
-        if residual not in order:
-            continue
-        # The square is generated from class representatives, not from a longer
-        # term that has already been identified with its representative.
-        residual = order.find(residual)
-        squared = arrow((residual, residual))
-        if squared not in order or order.find(squared) != residual:
+        if _residual_leq(order, left, right) is not True:
             continue
         order.add_less_than(left, right)
         recorded += 1
     return recorded
+
+
+def _mark_residual_incomparable(
+    order: TermPartialOrder,
+    operations: Sequence[Operation],
+    save_incomparable: Callable[[str], None] | None,
+) -> int:
+    """Mark pairs whose residuals both fail to be idempotent."""
+    if not any(op.symbol == "\\" and op.arity == 2 for op in operations):
+        return 0
+    marked = 0
+    for left, right in itertools.combinations(order.representatives(), 2):
+        if order.known_less_than(left, right) or order.known_less_than(right, left):
+            continue
+        if order.known_incomparable(left, right):
+            continue
+        less = _residual_leq(order, left, right)
+        greater = _residual_leq(order, right, left)
+        if less is not False or greater is not False:
+            continue
+        order.mark_incomparable(left, right)
+        if save_incomparable is not None:
+            save_incomparable(f"{left} | {right}.")
+        marked += 1
+    return marked
+
+
+def _mark_distinct_values(order: TermPartialOrder) -> None:
+    """Distinct value tuples are unequal even when the order is still open."""
+    values = getattr(order, "_values", None)
+    if not values:
+        return
+    reps = order.representatives()
+    for index, left in enumerate(reps):
+        for right in reps[index + 1 :]:
+            if values.get(left) != values.get(right):
+                order.mark_unequal(left, right)
+
+
+def _emit_undecided(order: TermPartialOrder, save_unknown: Callable[[str], None]) -> int:
+    """Record pairs that are neither ordered nor known to be incomparable."""
+    emitted = 0
+    for left, right in itertools.combinations(order.representatives(), 2):
+        if order.known_less_than(left, right) or order.known_less_than(right, left):
+            continue
+        if order.known_incomparable(left, right):
+            continue
+        if order.known_unequal(left, right):
+            save_unknown(f"{left} <= {right}.")
+        else:
+            save_unknown(f"{left} = {right}.")
+        emitted += 1
+    return emitted
 
 
 def _known_operation_result(
@@ -836,6 +1131,12 @@ def _known_operation_result(
     """
     if operation.arity != 2:
         raise ValueError(f"{operation.symbol} is not binary")
+    if isinstance(order, TermPartialOrder):
+        found = order.product(operation.symbol, (left, right))
+        if found is None and operation.commutative and left != right:
+            found = order.product(operation.symbol, (right, left))
+        if found is not None:
+            return found
     if left == right and operation.idempotent:
         return left if left in order else None
     candidates = [operation((left, right))]
@@ -880,9 +1181,37 @@ def _operation_table_cells(
         if term in seen:
             continue
         seen.add(term)
+        if isinstance(order, TermPartialOrder) and order.product(operation.symbol, args) is not None:
+            continue
         if term not in order:
             next_layer += 1
     return cells, next_layer
+
+
+def _rank_layout(graph: nx.DiGraph) -> dict[str, tuple[float, float]]:
+    """Place a large Hasse diagram by longest-path rank.
+
+    The crossing-reduction layout is for small diagrams. This keeps the
+    vertical order and finishes quickly when there are many classes.
+    """
+    rank = {node: 0 for node in graph.nodes()}
+    for _ in range(graph.number_of_nodes()):
+        changed = False
+        for lower, upper in graph.edges():
+            if rank[upper] < rank[lower] + 1:
+                rank[upper] = rank[lower] + 1
+                changed = True
+        if not changed:
+            break
+    buckets: dict[int, list[str]] = {}
+    for node, level in rank.items():
+        buckets.setdefault(level, []).append(node)
+    pos: dict[str, tuple[float, float]] = {}
+    for level, nodes in buckets.items():
+        nodes.sort(key=len)
+        for index, node in enumerate(nodes):
+            pos[node] = (float(index), float(level))
+    return pos
 
 
 def _draw_term_hasse(
@@ -890,6 +1219,8 @@ def _draw_term_hasse(
     graph: nx.DiGraph,
     title: str = "",
     labels: dict[str, str] | None = None,
+    edge_labels: dict[tuple[str, str], str] | None = None,
+    undecided: Sequence[tuple[str, str]] = (),
 ) -> None:
     """Draw a Hasse diagram of term representatives using the project layout."""
     from draw_orders import hasse_layout
@@ -903,9 +1234,10 @@ def _draw_term_hasse(
     max_len = max(len(lab) for lab in labels.values())
     node_size = max(900, min(2800, 110 * max_len))
     font_size = 8 if max_len > 12 else 10
+    pos = hasse_layout(graph) if graph.number_of_nodes() <= 40 else _rank_layout(graph)
     nx.draw(
         graph,
-        pos=hasse_layout(graph),
+        pos=pos,
         ax=ax,
         with_labels=True,
         labels=labels,
@@ -917,6 +1249,24 @@ def _draw_term_hasse(
         arrowsize=15,
         edge_color="gray",
     )
+    if edge_labels:
+        nx.draw_networkx_edge_labels(
+            graph, pos, edge_labels=edge_labels, ax=ax, font_size=7, font_color="#455a64"
+        )
+    if undecided:
+        undecided_graph = nx.DiGraph()
+        undecided_graph.add_nodes_from(graph.nodes())
+        undecided_graph.add_edges_from(undecided)
+        nx.draw_networkx_edges(
+            undecided_graph,
+            pos,
+            ax=ax,
+            edgelist=list(undecided),
+            edge_color="#c62828",
+            style="dashed",
+            arrows=True,
+            arrowsize=12,
+        )
     ax.margins(0.18)
     ax.set_title(title, fontsize=10)
     ax.axis("off")
@@ -972,31 +1322,38 @@ def _add_operation_table_page(
         )
     ax_legend.set_title("Class representatives", fontsize=10, loc="left")
 
-    table = ax_table.table(
-        cellText=cells,
-        rowLabels=labels,
-        colLabels=labels,
-        loc="center",
-        cellLoc="center",
-    )
-    table.auto_set_font_size(False)
-    fontsize = 9 if n <= 12 else (8 if n <= 18 else 6)
-    table.set_fontsize(fontsize)
-    table.scale(1.0, 1.35)
-    header_color = "#eceff1"
-    unknown_color = "#ffe082"
-    for (row, col), cell in table.get_celld().items():
-        cell.set_edgecolor("#b0bec5")
-        if row == 0 or col == -1:
-            cell.set_facecolor(header_color)
-            cell.get_text().set_fontweight("bold")
-            continue
-        if cells[row - 1][col] == "?":
-            cell.set_facecolor(unknown_color)
-    if (0, -1) in table.get_celld():
-        table[0, -1].get_text().set_text(operation.symbol)
-        table[0, -1].get_text().set_fontweight("bold")
     symbol = operation.symbol
+    if n > 24:
+        numeric = [[float(value) if value != "?" else float("nan") for value in row] for row in cells]
+        image = ax_table.imshow(numeric, cmap="viridis", aspect="auto", interpolation="nearest")
+        fig.colorbar(image, ax=ax_table, fraction=0.046, pad=0.04)
+        ax_table.set_xlabel("column index")
+        ax_table.set_ylabel("row index")
+    else:
+        table = ax_table.table(
+            cellText=cells,
+            rowLabels=labels,
+            colLabels=labels,
+            loc="center",
+            cellLoc="center",
+        )
+        table.auto_set_font_size(False)
+        fontsize = 9 if n <= 12 else (8 if n <= 18 else 6)
+        table.set_fontsize(fontsize)
+        table.scale(1.0, 1.35)
+        header_color = "#eceff1"
+        unknown_color = "#ffe082"
+        for (row, col), cell in table.get_celld().items():
+            cell.set_edgecolor("#b0bec5")
+            if row == 0 or col == -1:
+                cell.set_facecolor(header_color)
+                cell.get_text().set_fontweight("bold")
+                continue
+            if cells[row - 1][col] == "?":
+                cell.set_facecolor(unknown_color)
+        if (0, -1) in table.get_celld():
+            table[0, -1].get_text().set_text(operation.symbol)
+            table[0, -1].get_text().set_fontweight("bold")
     ax_table.set_title(
         f"row {symbol} column; "
         f"{next_layer} new term{'s' if next_layer != 1 else ''} at the next layer",
@@ -1010,6 +1367,205 @@ def _add_operation_table_page(
     )
     pdf.savefig(fig, bbox_inches="tight")
     plt.close(fig)
+
+class _ParsedAlgebra:
+    """Operation tables of one Mace4 interpretation."""
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+        self.binary: dict[str, list[int]] = {}
+        self.unary: dict[str, list[int]] = {}
+        self.constants: dict[str, int] = {}
+        self.relations: dict[str, list[int]] = {}
+
+
+class ModelTables:
+    """Pointwise term evaluation in a file of finite algebras.
+
+    A term in one variable is determined by the tuple of its values at every
+    element of every algebra. Two terms are identical in the variety generated
+    by those algebras exactly when these tuples agree, so each tuple is stored
+    once. The representative is the first term that produced it.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.algebras = _parse_mace4_algebras(path)
+        if not self.algebras:
+            raise ValueError(f"no algebras in {path}")
+        self.owners: list[int] = []
+        for index, algebra in enumerate(self.algebras, start=1):
+            self.owners.extend([index] * algebra.size)
+        self.has_leq = all("<=" in algebra.relations for algebra in self.algebras)
+        if any("<=" in algebra.relations for algebra in self.algebras) and not self.has_leq:
+            raise ValueError(f"{path} mixes algebras with and without <=")
+
+    def variable(self) -> tuple[int, ...]:
+        values: list[int] = []
+        for algebra in self.algebras:
+            values.extend(range(algebra.size))
+        return tuple(values)
+
+    def constant(self, symbol: str) -> tuple[int, ...]:
+        values: list[int] = []
+        for algebra in self.algebras:
+            value = algebra.constants[symbol]
+            values.extend([value] * algebra.size)
+        return tuple(values)
+
+    def apply(self, operation: Operation, arguments: Sequence[tuple[int, ...]]) -> tuple[int, ...]:
+        values: list[int] = []
+        offset = 0
+        for algebra in self.algebras:
+            size = algebra.size
+            if operation.arity == 1:
+                table = algebra.unary[operation.symbol]
+                arg = arguments[0]
+                values.extend(table[arg[offset + i]] for i in range(size))
+            elif operation.arity == 2:
+                table = algebra.binary[operation.symbol]
+                left, right = arguments
+                values.extend(
+                    table[left[offset + i] * size + right[offset + i]] for i in range(size)
+                )
+            else:
+                raise ValueError(f"cannot evaluate {operation.symbol} of arity {operation.arity}")
+            offset += size
+        return tuple(values)
+
+    def leq(self, left: tuple[int, ...], right: tuple[int, ...]) -> bool:
+        offset = 0
+        for algebra in self.algebras:
+            table = algebra.relations["<="]
+            size = algebra.size
+            for i in range(size):
+                if table[left[offset + i] * size + right[offset + i]] == 0:
+                    return False
+            offset += size
+        return True
+
+
+def _parse_mace4_algebras(path: Path) -> list[_ParsedAlgebra]:
+    text = path.read_text(encoding="utf-8")
+    algebras: list[_ParsedAlgebra] = []
+    for chunk in text.split("interpretation(")[1:]:
+        size_text, _rest = chunk.split(",", 1)
+        algebra = _ParsedAlgebra(int(size_text.strip()))
+        for kind, head, body in re.findall(
+            r"(function|relation)\((.*?),\s*\[(.*?)\]\)",
+            chunk,
+            flags=re.DOTALL,
+        ):
+            symbol = head.split("(", 1)[0].strip()
+            values = [int(token) for token in re.findall(r"-?\d+", body)]
+            if kind == "relation":
+                algebra.relations[symbol] = values
+            elif "(" not in head:
+                algebra.constants[symbol] = values[0]
+            elif head.count("_") == 1:
+                algebra.unary[symbol] = values
+            else:
+                algebra.binary[symbol] = values
+        algebras.append(algebra)
+    return algebras
+
+
+def _separator_from_values(order: TermPartialOrder, left: str, right: str) -> int | None:
+    values = getattr(order, "_values", None)
+    owners = getattr(order, "_value_owner", None)
+    if not values or not owners or left not in values or right not in values:
+        return None
+    for index, (a, b) in enumerate(zip(values[left], values[right])):
+        if a != b:
+            return owners[index]
+    return None
+
+
+def _classify_from_models(
+    operations: Sequence[Operation],
+    variables: Sequence[str],
+    max_level: int,
+    equivalence_classes: TermPartialOrder,
+    tables: ModelTables,
+    progress: bool,
+) -> None:
+    """Build the term algebra by evaluating each new term in the models.
+
+    Only one representative is kept for each tuple of values. Products of
+    older representatives are not generated again.
+    """
+    known: dict[tuple[int, ...], str] = {}
+    equivalence_classes._values = {}
+    equivalence_classes._value_owner = tables.owners
+
+    def admit(term: str, signature: tuple[int, ...]) -> None:
+        known[signature] = term
+        equivalence_classes._values[term] = signature
+        equivalence_classes.add(term)
+
+    pool: list[str] = []
+    variable = variables[0]
+    for term in seed_terms(list(operations), variables):
+        signature = tables.variable() if term == variable else tables.constant(term)
+        if signature in known:
+            continue
+        admit(term, signature)
+        pool.append(term)
+    if progress:
+        print(f"Level 0: {len(pool)} terms")
+    frontier = list(pool)
+
+    for level in range(1, max_level + 1):
+        new_terms: list[str] = []
+        for term, operation, args in expand_applications(operations, pool, frontier):
+            signature = tables.apply(
+                operation,
+                [equivalence_classes._values[arg] for arg in args],
+            )
+            result = known.get(signature)
+            if result is None:
+                admit(term, signature)
+                result = term
+                new_terms.append(term)
+            if operation.arity == 2:
+                equivalence_classes.record_product(operation.symbol, args, result)
+        if not new_terms:
+            print(f"No new terms at level {level}; terminating.")
+            return
+        frontier = new_terms
+        pool.extend(new_terms)
+        if progress:
+            print(f"Level {level}: {len(pool)} terms")
+    for operation in operations:
+        if operation.arity == 2 and operation.idempotent:
+            for rep in pool:
+                equivalence_classes.record_product(operation.symbol, (rep, rep), rep)
+
+
+def _record_leq_from_values(
+    order: TermPartialOrder,
+    tables: ModelTables,
+    save_axiom: Callable[[str], None],
+    save_incomparable: Callable[[str], None] | None,
+) -> None:
+    """Decide the order from the algebras' ``<=`` tables."""
+    values = order._values
+    for left, right in itertools.combinations(order.representatives(), 2):
+        less = tables.leq(values[left], values[right])
+        greater = tables.leq(values[right], values[left])
+        if less and greater:
+            continue
+        order.note_separator(left, right, _separator_from_values(order, left, right))
+        if less:
+            save_axiom(f"{left} <= {right}.")
+            order.add_less_than(left, right)
+        elif greater:
+            save_axiom(f"{right} <= {left}.")
+            order.add_less_than(right, left)
+        else:
+            order.mark_incomparable(left, right)
+            if save_incomparable is not None:
+                save_incomparable(f"{left} | {right}.")
+
 
 async def classify_term_order(
     operations: list[Operation],
@@ -1026,6 +1582,7 @@ async def classify_term_order(
     tptp_provers: Sequence[TptpProverSpec] | None = None,
     tptp_timeout_s: float | None = None,
     algebras: Path | str | None = None,
+    save_incomparable: Callable[[str], None] | None = None,
 ) -> None:
     """Classify the free-algebra order by expanding a pruned pool of representatives.
 
@@ -1067,6 +1624,7 @@ async def classify_term_order(
         leq_is_relation = False
 
     pending = pending_lookup if pending_lookup is not None else []
+    tables = ModelTables(algebras_path) if algebras_path is not None and len(variables) == 1 else None
 
     def live(terms_in: Sequence[str]) -> list[str]:
         seen: set[str] = set()
@@ -1136,6 +1694,9 @@ async def classify_term_order(
                     po = PartialOrderVerdict.GREATER_THAN
                 elif verdict is Decision.FALSIFIED:  # incomparable in free algebra
                     po = PartialOrderVerdict.INCOMPARABLE
+                    equivalence_classes.mark_incomparable(left, right)
+                    if save_incomparable is not None:
+                        save_incomparable(f"{left} | {right}.")
                 else:
                     save_unknown(f"{right} <= {left}.")
             else:
@@ -1161,6 +1722,7 @@ async def classify_term_order(
                 leq_is_relation,
                 save_axiom,
                 progress,
+                save_incomparable,
             )
             return
         for left, right in pairs:
@@ -1169,6 +1731,17 @@ async def classify_term_order(
             await classify_pair(left, right)
 
     try:
+        if tables is not None:
+            pending.clear()
+            _classify_from_models(
+                operations,
+                variables,
+                max_level,
+                equivalence_classes,
+                tables,
+                progress,
+            )
+            return
         pool = live(seed_terms(operations, variables))
         apply_lookups()
         pool = live(pool)
@@ -1176,15 +1749,22 @@ async def classify_term_order(
             print(f"Level 0: {len(pool)} terms")
         await classify_pairs(itertools.combinations(pool, 2))
         pool = live(pool)
+        frontier = list(pool)
 
         for level in range(1, max_level + 1):
-            candidates = expand_terms(operations, pool)
-            for term in candidates:
+            applications = expand_applications(operations, pool, frontier)
+            for term, operation, args in applications:
                 equivalence_classes.add(term)
+                if operation.arity == 2:
+                    equivalence_classes.record_product(operation.symbol, args, term)
             apply_lookups()
-            new_terms = [term for term in candidates if equivalence_classes.find(term) == term]
+            new_terms = [
+                term for term, _operation, _args in applications
+                if equivalence_classes.find(term) == term
+            ]
             if not new_terms:
                 print(f"No new terms at level {level}; terminating.")
+                equivalence_classes.forget_non_representatives(_pending_mentions(pending))
                 return
             prev = list(pool)
             await classify_pairs(
@@ -1193,16 +1773,42 @@ async def classify_term_order(
                     itertools.combinations(new_terms, 2),
                 )
             )
+            for term, operation, args in applications:
+                if operation.arity == 2:
+                    equivalence_classes.record_product(operation.symbol, args, term)
             pool = live(prev + new_terms)
+            frontier = [rep for rep in pool if rep not in prev]
+            equivalence_classes.forget_non_representatives(_pending_mentions(pending))
             if progress:
                 print(f"Level {level}: {len(pool)} terms")
     finally:
-        if algebras_path is not None and not leq_is_relation:
+        if tables is not None and tables.has_leq:
+            _record_leq_from_values(
+                equivalence_classes, tables, save_axiom, save_incomparable
+            )
+            for lower, upper in equivalence_classes.cover_edges():
+                equivalence_classes.note_separator(
+                    lower, upper, _separator_from_values(equivalence_classes, lower, upper)
+                )
+        elif algebras_path is not None and not leq_is_relation:
             recorded = _record_residual_order(equivalence_classes, operations)
+            marked = _mark_residual_incomparable(
+                equivalence_classes, operations, save_incomparable
+            )
             if progress and recorded:
                 print(
                     f"  Order from equalities: {recorded} "
                     f"comparison{'s' if recorded != 1 else ''}"
+                )
+            if progress and marked:
+                print(f"  Incomparable from equalities: {marked}")
+            _mark_distinct_values(equivalence_classes)
+            undecided = _emit_undecided(equivalence_classes, save_unknown)
+            if progress and undecided:
+                print(f"  Still open: {undecided}")
+            for lower, upper in equivalence_classes.cover_edges():
+                equivalence_classes.note_separator(
+                    lower, upper, _separator_from_values(equivalence_classes, lower, upper)
                 )
 
 
@@ -1219,11 +1825,40 @@ def write_free_algebra_pdf(
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     reps = order.representatives()
-    hasse_labels = {n: str(n) for n in order.hasse.nodes()}
-    for i, rep in enumerate(reps):
-        hasse_labels[rep] = f"{i + 1}: {rep}"
+    hasse = order.hasse
+    hasse_labels = {n: str(n) for n in hasse.nodes()}
+    index = {rep: str(i + 1) for i, rep in enumerate(reps)}
+    for rep in reps:
+        hasse_labels[rep] = index[rep] if len(reps) > 40 else f"{index[rep]}: {rep}"
     unknown_lines = list(unknowns)
-    n_nodes = order.hasse.number_of_nodes()
+    n_incomparable = sum(
+        1
+        for left, right in itertools.combinations(reps, 2)
+        if order.known_incomparable(left, right)
+    )
+    undecided_edges: list[tuple[str, str]] = []
+    seen_undecided: set[frozenset[str]] = set()
+    for formula in unknown_lines:
+        parsed = _formula_sides(formula)
+        if parsed is None:
+            continue
+        _op, left, right = parsed
+        if left not in order or right not in order:
+            continue
+        left, right = order.find(left), order.find(right)
+        if left == right or left not in index or right not in index:
+            continue
+        key = frozenset((left, right))
+        if key in seen_undecided:
+            continue
+        seen_undecided.add(key)
+        undecided_edges.append((left, right))
+    edge_labels = {
+        (lower, upper): str(model)
+        for lower, upper in order.cover_edges()
+        if (model := order.separator(lower, upper)) is not None
+    }
+    n_nodes = hasse.number_of_nodes()
     fig_width = max(10, min(20, 6 + n_nodes * 0.45))
     first_unknowns = unknown_lines[:40]
     remaining_unknowns = unknown_lines[40:]
@@ -1238,9 +1873,15 @@ def write_free_algebra_pdf(
 
     _draw_term_hasse(
         ax_graph,
-        order.hasse,
-        title="Known partial order",
+        hasse,
+        title=(
+            "Solid: known order. Dashed: not yet decided. "
+            f"No edge: incomparable ({n_incomparable}). "
+            "Edge numbers are one separating model."
+        ),
         labels=hasse_labels,
+        edge_labels=edge_labels,
+        undecided=undecided_edges[:80],
     )
 
     ax_text.axis("off")
@@ -1260,16 +1901,39 @@ def write_free_algebra_pdf(
     fig.suptitle(f"Free {name}", fontsize=14, fontweight="bold")
 
     pdf = matplotlib.backends.backend_pdf.PdfPages(filename=str(pdf_path))
-    pdf.savefig(fig, bbox_inches="tight")
-    plt.close(fig)
-
+    operation_lines: list[str] = []
     for operation in operations:
         if operation.arity == 2:
             _add_operation_table_page(pdf, order, operation, reps, fig_width)
+            cells, _next_layer = _operation_table_cells(order, operation, reps)
+            operation_lines.append(f"# {operation.symbol}")
+            operation_lines.append("\t" + "\t".join(index[rep] for rep in reps))
+            for rep, row in zip(reps, cells):
+                operation_lines.append(index[rep] + "\t" + "\t".join(row))
+            operation_lines.append("")
+    operation_path = pdf_path.with_suffix(".operations.txt")
+    operation_path.write_text("\n".join(operation_lines), encoding="utf-8")
+    pdf.savefig(fig, bbox_inches="tight")
+    plt.close(fig)
 
-    while remaining_unknowns:
+    separator_lines = [
+        f"{index[lower]} < {index[upper]} model {model}"
+        for lower, upper in order.cover_edges()
+        if (model := order.separator(lower, upper)) is not None
+    ]
+    separator_path = pdf_path.with_suffix(".separators.txt")
+    separator_path.write_text(
+        "\n".join(separator_lines) + ("\n" if separator_lines else ""),
+        encoding="utf-8",
+    )
+    if separator_lines:
+        print(f"One separating model per covering edge written to {separator_path}")
+
+    unknown_pages = 0
+    while remaining_unknowns and unknown_pages < 3:
         chunk = remaining_unknowns[:50]
         remaining_unknowns = remaining_unknowns[50:]
+        unknown_pages += 1
         page_height = max(8.0, min(14.0, 1.2 + 0.24 * len(chunk)))
         fig, ax = plt.subplots(figsize=(fig_width, page_height))
         ax.axis("off")
@@ -1284,6 +1948,21 @@ def write_free_algebra_pdf(
             fontsize=9,
             family="monospace",
             linespacing=1.35,
+        )
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+    if remaining_unknowns:
+        fig, ax = plt.subplots(figsize=(fig_width, 3))
+        ax.axis("off")
+        ax.set_title("Unknown identities (continued)", fontsize=10, loc="left")
+        ax.text(
+            0.0,
+            1.0,
+            f"{len(remaining_unknowns)} further open comparisons are in the unknown file.",
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=11,
         )
         pdf.savefig(fig, bbox_inches="tight")
         plt.close(fig)
