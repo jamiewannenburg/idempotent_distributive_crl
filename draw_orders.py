@@ -359,8 +359,44 @@ def _nudge_positions(G, pos, order_by_level, max_level, steps=13, passes=8):
     return pos
 
 
+def _rank_layout(G):
+    """Fast hierarchical layout without crossing reduction (for large graphs)."""
+    levels = compute_levels(G)
+    if not levels:
+        return nx.spring_layout(G)
+    
+    # Group nodes by level
+    level_groups = {}
+    for node, level in levels.items():
+        level_groups.setdefault(level, []).append(node)
+    
+    max_level = max(levels.values())
+    
+    # Simple layout: arrange nodes at each level in sorted order
+    pos = {}
+    for level in range(max_level + 1):
+        nodes_at_level = sorted(level_groups.get(level, []), key=_node_sort_key)
+        n = len(nodes_at_level)
+        if n == 0:
+            continue
+        for i, node in enumerate(nodes_at_level):
+            x = (i - (n - 1) / 2) * _LEVEL_X_GAP
+            pos[node] = (x, float(level))
+    
+    return pos
+
+
 def hasse_layout(G):
-    """Create a hierarchical layout suitable for Hasse diagrams (crossing reduction)."""
+    """Create a hierarchical layout suitable for Hasse diagrams (crossing reduction).
+    
+    For large graphs (>40 nodes), uses a fast rank-based layout.
+    For small graphs, uses full crossing reduction."""
+    num_nodes = G.number_of_nodes()
+    
+    # Use fast layout for large graphs
+    if num_nodes > 40:
+        return _rank_layout(G)
+    
     levels = compute_levels(G)
     if not levels:
         return nx.spring_layout(G)

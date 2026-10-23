@@ -218,9 +218,12 @@ if __name__ == "__main__":
         unknown_file.write(formula + "\n")
         unknown_file.flush()
     
-    async def classify() -> None:
+    is_closed = False
+    
+    async def classify() -> bool:
+        nonlocal is_closed
         try:
-            await classify_term_order(
+            is_closed = await classify_term_order(
                 operations,
                 variables,
                 max_level=args.max_level,
@@ -238,6 +241,7 @@ if __name__ == "__main__":
                 save_incomparable=save_incomparable,
             )
             await _drain_subprocess_transports()
+            return is_closed
         finally:
             axioms_file.close()
             unknown_file.close()
@@ -257,22 +261,31 @@ if __name__ == "__main__":
             unknown_file.close()
         if not incomparable_file.closed:
             incomparable_file.close()
-        
-        # Export free algebra in all formats
+    
+    # Only export if the run completed (not interrupted by Ctrl+C)
+    if completed:
         output_path = Path(args.output)
+        
+        # Export algebra (marks as free only if closed)
         export_paths = export_free_algebra(
             equivalence_classes,
             operations,
             output_path.with_suffix(""),  # Remove .pdf suffix for base name
             "Free 1-generated iCRP",
             generator_term="x",
+            is_closed=is_closed,
         )
-        print(f"Exported free algebra:")
+        
+        if is_closed:
+            print(f"\nExported free algebra (closed with {len(equivalence_classes.representatives())} elements):")
+        else:
+            print(f"\nExported partial algebra (NOT closed, reached max level {args.max_level}):")
         print(f"  Mace4:  {export_paths['model']}")
         print(f"  JSON:   {export_paths['json']}")
         
-        # Keep PDF output
+        # Generate PDF
         write_free_algebra_pdf(equivalence_classes, unknowns, args.output, operations, "ICRP")
-    if not completed:
+    else:
+        print("\nRun interrupted, skipping export.")
         sys.exit(130)
 

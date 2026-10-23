@@ -50,6 +50,8 @@ class Operation:
         if self.type == OperationType.INFIX:
             return f"({arguments[0]} {self.symbol} {arguments[1]})"
         elif self.type == OperationType.PREFIX:
+            if self.arity == 0:
+                return self.symbol
             return f"{self.symbol}({','.join(arguments)})"
         elif self.type == OperationType.POSTFIX:
             return f"({','.join(arguments)}){self.symbol}"
@@ -1584,8 +1586,10 @@ async def classify_term_order(
     tptp_timeout_s: float | None = None,
     algebras: Path | str | None = None,
     save_incomparable: Callable[[str], None] | None = None,
-) -> None:
+) -> bool:
     """Classify the free-algebra order by expanding a pruned pool of representatives.
+    
+    Returns True if the algebra is closed (no new terms at some level), False otherwise.
 
     At each level, new terms are built only from current class representatives.
     When two terms are proved equal, the longer one (the absorbed class name) is
@@ -1766,7 +1770,7 @@ async def classify_term_order(
             if not new_terms:
                 print(f"No new terms at level {level}; terminating.")
                 equivalence_classes.forget_non_representatives(_pending_mentions(pending))
-                return
+                return True
             prev = list(pool)
             await classify_pairs(
                 itertools.chain(
@@ -1811,6 +1815,9 @@ async def classify_term_order(
                 equivalence_classes.note_separator(
                     lower, upper, _separator_from_values(equivalence_classes, lower, upper)
                 )
+    
+    # If we reach here, we hit max_level without closing
+    return False
 
 
 def export_free_algebra(
@@ -1819,8 +1826,13 @@ def export_free_algebra(
     base_path: Path,
     name: str,
     generator_term: str = "x",
+    is_closed: bool = True,
 ) -> dict[str, Path]:
     """Export free algebra to .model and .json formats.
+    
+    Args:
+        is_closed: Whether the algebra is closed (all operations known).
+                  If False, unknown entries are marked as null and isFree is False.
     
     Returns a dict mapping format names to output paths.
     """
@@ -1838,8 +1850,9 @@ def export_free_algebra(
     # Build index mapping: representative term -> integer element
     index = {rep: i for i, rep in enumerate(reps)}
     
-    # Build operation tables
+    # Build operation tables and check for unknowns
     operations_data = {}
+    has_unknowns = False
     
     for operation in operations:
         if operation.arity == 0:
@@ -1850,21 +1863,36 @@ def export_free_algebra(
                     "arity": 0,
                     "table": index[result],
                 }
+            else:
+                has_unknowns = True
+                print(f"Warning: Unknown constant {operation.symbol}")
         elif operation.arity == 2:
             # Binary operation
-            table = np.zeros((n, n), dtype=int)
+            # Use None for unknown entries
+            table = [[None for _ in range(n)] for _ in range(n)]
             for i, left in enumerate(reps):
                 for j, right in enumerate(reps):
                     result = _known_operation_result(order, operation, left, right)
                     if result is not None and result in index:
-                        table[i, j] = index[result]
+                        table[i][j] = index[result]
                     else:
-                        # Unknown result - use some default (shouldn't happen for complete algebras)
-                        table[i, j] = 0
+                        has_unknowns = True
+            
+            # Convert to proper format for export
+            # For Mace4 export, unknowns must be replaced with a valid index (0)
+            # For JSON export, keep None for partial data
             operations_data[operation.symbol] = {
                 "arity": 2,
                 "table": table,
+                "has_unknowns": has_unknowns,
             }
+    
+    # Determine if we should mark this as a free algebra
+    # Only mark as free if closed and no unknowns
+    is_free = is_closed and not has_unknowns
+    
+    if has_unknowns and is_closed:
+        print(f"Warning: Algebra marked as closed but has {sum(1 for op in operations_data.values() if op.get('has_unknowns', False))} operations with unknowns")
     
     # Extract order covers
     covers = [(index[lower], index[upper]) for lower, upper in order.cover_edges()]
@@ -1895,16 +1923,30 @@ def export_free_algebra(
     # Build representative terms list
     representative_terms = [rep for rep in reps]
     
+    # Convert table format for export: for Mace4, replace None with 0; keep structure for JSON
+    export_operations = {}
+    for symbol, op_data in operations_data.items():
+        if op_data["arity"] == 0:
+            export_operations[symbol] = op_data
+        else:
+            # Create numpy array for Mace4, replacing None with 0
+            table = op_data["table"]
+            table_array = np.array([[v if v is not None else 0 for v in row] for row in table])
+            export_operations[symbol] = {
+                "arity": op_data["arity"],
+                "table": table_array,
+            }
+    
     # Create export data
     data = AlgebraExportData(
         name=name,
         cardinality=n,
-        operations=operations_data,
+        operations=export_operations,
         relations=None,
         order_type="icrp",  # Free iCRP
         order_relation=order_relation,
         order_covers=covers,
-        is_free=True,
+        is_free=is_free,
         generator_index=generator_index,
         representative_terms=representative_terms,
         layout_positions=layout_positions,
@@ -1920,6 +1962,9 @@ def export_free_algebra(
     json_path = parent / f"{stem}.json"
     export_to_json(data, json_path)
     paths["json"] = json_path
+    
+    if not is_free:
+        print(f"Note: Exported partial algebra (isFree={is_free}, closed={is_closed}, has_unknowns={has_unknowns})")
     
     return paths
 

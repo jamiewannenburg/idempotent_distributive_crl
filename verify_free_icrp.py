@@ -169,6 +169,14 @@ def load_algebra_from_json(json_path: Path) -> tuple[dict[str, Any], list[str], 
 
     operations = data["operations"]
     cardinality = data["cardinality"]
+    
+    # Check if this is marked as a partial/incomplete algebra
+    is_free = data.get("isFree", True)
+    if not is_free:
+        raise ValueError(
+            f"{json_path} is marked as a partial algebra (isFree=false). "
+            "The verifier requires a complete free algebra with all operations known."
+        )
 
     # Extract or compute representative terms
     if "representativeTerms" in data:
@@ -190,7 +198,7 @@ def load_algebra_from_json(json_path: Path) -> tuple[dict[str, Any], list[str], 
 
 
 def load_algebra_from_model(
-    model_path: Path, generator_index: int = 1
+    model_path: Path, generator_index: int | None = None
 ) -> tuple[dict[str, Any], list[str], int]:
     """Load algebra from Mace4 .model format (secondary input).
 
@@ -199,20 +207,22 @@ def load_algebra_from_model(
 
     Args:
         model_path: Path to .model file
-        generator_index: Index of generator element (default 1)
+        generator_index: Index of generator element (default: read from data, or 1 if absent)
 
     Returns:
         operations: dict mapping operation symbols to {arity, table}
         representative_terms: list of representative terms per element
         cardinality: number of elements
     """
-    from pyp9m4 import Model
+    from pyp9m4 import parse_models_from_file
 
     # Read the file
     content = model_path.read_text(encoding="utf-8")
 
-    # Try to find representative terms in comments
+    # Try to find representative terms and generator index in comments
     representative_terms: list[str] | None = None
+    found_generator_index: int | None = None
+    
     for line in content.splitlines():
         line = line.strip()
         if line.startswith("%") and "representative_terms" in line.lower():
@@ -222,9 +232,16 @@ def load_algebra_from_model(
                 representative_terms = json.loads(json_part)
             except (IndexError, json.JSONDecodeError):
                 pass
+        elif line.startswith("%") and "generator_index" in line.lower():
+            # Format: % generator_index: 1
+            try:
+                json_part = line.split(":", 1)[1].strip()
+                found_generator_index = int(json_part)
+            except (IndexError, ValueError):
+                pass
 
     # Parse the model
-    models = list(Model.from_file(str(model_path)))
+    models = list(parse_models_from_file(str(model_path)))
     if not models:
         raise ValueError(f"No models found in {model_path}")
 
@@ -252,10 +269,23 @@ def load_algebra_from_model(
         e = model.as_function("e")()
         operations["e"] = {"arity": 0, "table": e}
 
+    # Use generator index from file, command line, or default
+    if generator_index is None:
+        generator_index = found_generator_index if found_generator_index is not None else 1
+        if found_generator_index is None:
+            logger.warning(
+                f"Generator index not found in {model_path}, using default value 1. "
+                "Use --generator-index to specify if incorrect."
+            )
+    
+    # Find e_index from the constant
+    e_index = operations.get("e", {}).get("table", 0) if "e" in operations else 0
+    
     # Compute representative terms if not in comments
     if representative_terms is None:
         logger.info(
-            f"Representative terms not in {model_path}; computing via BFS from generator {generator_index}"
+            f"Representative terms not in {model_path}; computing via BFS "
+            f"from generator {generator_index} and e at {e_index}"
         )
         representative_terms = compute_representative_terms_bfs(
             operations, cardinality, generator_index
@@ -271,13 +301,14 @@ def load_algebra_from_model(
 
 
 def load_algebra(
-    path: Path, generator_index: int = 1
+    path: Path, generator_index: int | None = None
 ) -> tuple[dict[str, Any], list[str], int]:
     """Load algebra from any supported format (.json or .model).
 
     Args:
         path: Path to algebra file
-        generator_index: Index of generator element for .model files (default 1)
+        generator_index: Index of generator element for .model files 
+                        (default: read from file, or 1 if absent)
 
     Returns:
         operations: dict mapping operation symbols to {arity, table}
@@ -383,7 +414,7 @@ async def try_prove_equation(
                 logger.debug(f"Prover9 error: {e}")
                 return ("prover9", False)
 
-        tasks.append(run_prover9())
+        tasks.append(asyncio.create_task(run_prover9()))
 
     # TPTP provers
     if tptp_provers:
@@ -401,7 +432,7 @@ async def try_prove_equation(
                         logger.debug(f"{spec.name} error: {e}")
                         return (spec.name, False)
 
-                tasks.append(run_tptp())
+                tasks.append(asyncio.create_task(run_tptp()))
 
         except Exception as e:
             logger.debug(f"TPTP conversion error: {e}")
@@ -910,8 +941,8 @@ def main():
     parser.add_argument(
         "--generator-index",
         type=int,
-        default=1,
-        help="Index of generator element for .model files (default: 1)",
+        default=None,
+        help="Index of generator element for .model files (default: read from file, or 1 if absent)",
     )
 
     parser.add_argument(
