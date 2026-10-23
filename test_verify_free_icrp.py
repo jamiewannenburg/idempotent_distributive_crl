@@ -187,6 +187,26 @@ def test_checkpoint_load_nonexistent():
 
 
 @pytest.mark.asyncio
+async def test_try_prove_equation_uses_prover_outcome():
+    """Prover9 success is ProverOutcome.proved, not the string 'success'."""
+    from pyp9m4 import Prover9
+    from pyp9m4.options import Prover9CliOptions
+    from axioms import icrp_axioms
+    from verify_free_icrp import try_prove_equation
+
+    axioms = [line.strip() for line in icrp_axioms.strip().split("\n") if line.strip()]
+    prover9 = Prover9(
+        options=Prover9CliOptions(max_seconds=10),
+        timeout_s=10.0,
+    )
+    proved, name, _elapsed = await try_prove_equation(
+        "(x * x) = x", axioms, prover9, [], 10.0
+    )
+    assert proved is True
+    assert name == "prover9"
+
+
+@pytest.mark.asyncio
 async def test_verify_equation_proved_mock():
     """Test verify_equation with mocked prover that succeeds."""
     # Mock provers

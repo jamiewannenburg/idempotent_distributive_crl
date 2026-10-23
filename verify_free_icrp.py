@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from pyp9m4 import Mace4, Prover9
+from pyp9m4 import Mace4, Prover9, ProverOutcome
 from pyp9m4.options import Mace4CliOptions, Prover9CliOptions
 
 from axioms import icrp_axioms, to_p9m4
@@ -398,8 +398,8 @@ async def try_prove_equation(
     goal = equation if equation.endswith(".") else f"{equation}."
     theory_text = to_p9m4("\n".join(axioms), goal)
 
-    # Race solvers
-    tasks = []
+    # Race solvers until one proves the goal (or all finish / time out).
+    tasks: set[asyncio.Task] = set()
 
     if prover9 is not None:
         async def run_prover9():
@@ -407,14 +407,15 @@ async def try_prove_equation(
                 result = await asyncio.to_thread(
                     prover9.run, input=theory_text, timeout_s=timeout_s
                 )
-                if result.outcome == "success":
+                # pyp9m4 uses ProverOutcome.proved, not a bare "success" string
+                if result.outcome == ProverOutcome.proved:
                     return ("prover9", True)
                 return ("prover9", False)
             except Exception as e:
                 logger.debug(f"Prover9 error: {e}")
                 return ("prover9", False)
 
-        tasks.append(asyncio.create_task(run_prover9()))
+        tasks.add(asyncio.create_task(run_prover9()))
 
     # TPTP provers
     if tptp_provers:
@@ -432,7 +433,7 @@ async def try_prove_equation(
                         logger.debug(f"{spec.name} error: {e}")
                         return (spec.name, False)
 
-                tasks.append(asyncio.create_task(run_tptp()))
+                tasks.add(asyncio.create_task(run_tptp()))
 
         except Exception as e:
             logger.debug(f"TPTP conversion error: {e}")
@@ -440,40 +441,35 @@ async def try_prove_equation(
     if not tasks:
         return (False, None, 0.0)
 
-    # Wait for first success or all completions
-    done, pending = await asyncio.wait(
-        tasks, return_when=asyncio.FIRST_COMPLETED, timeout=timeout_s + 5
-    )
-
-    # Check for a successful proof
-    for task in done:
-        try:
-            prover_name, proved = await task
-            if proved:
-                # Cancel remaining tasks
-                for t in pending:
-                    t.cancel()
-                elapsed = time.time() - start
-                return (True, prover_name, elapsed)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.debug(f"Task error: {e}")
-
-    # Wait for remaining tasks
-    if pending:
-        remaining, _ = await asyncio.wait(pending, timeout=1.0)
-        for task in remaining:
+    deadline = start + timeout_s + 5
+    while tasks:
+        remaining_timeout = deadline - time.time()
+        if remaining_timeout <= 0:
+            break
+        done, pending = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED, timeout=remaining_timeout
+        )
+        if not done:
+            break
+        for task in done:
             try:
-                prover_name, proved = await task
+                prover_name, proved = task.result()
                 if proved:
-                    elapsed = time.time() - start
-                    return (True, prover_name, elapsed)
-            except:
-                pass
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                    return (True, prover_name, time.time() - start)
+            except Exception as e:
+                logger.debug(f"Task error: {e}")
+        tasks = pending
 
-    elapsed = time.time() - start
-    return (False, None, elapsed)
+    for t in tasks:
+        t.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    return (False, None, time.time() - start)
 
 
 async def search_counterexample(
@@ -499,25 +495,24 @@ async def search_counterexample(
     theory_text = to_p9m4("\n".join(axioms), negated_goal)
 
     try:
-        # Search increasing domain sizes
+        # Search increasing domain sizes (Mace4 has no .run; use models()).
         for size in range(min_size, max_size + 1):
-            # Allocate proportional time per size
             size_timeout = timeout_s / (max_size - min_size + 1)
-
             mace4_options = Mace4CliOptions(
-                max_seconds=int(size_timeout),
+                max_seconds=max(1, int(size_timeout)),
                 max_models=1,
-                start_size=size,
+                domain_size=size,
                 end_size=size,
             )
             mace4_local = Mace4(options=mace4_options, timeout_s=size_timeout)
 
-            result = await asyncio.to_thread(
-                mace4_local.run, input=theory_text, timeout_s=size_timeout
+            models = await asyncio.to_thread(
+                lambda: list(mace4_local.models(input=theory_text))
             )
-
-            if result.outcome == "success":
-                return (True, result.stdout or result.model_strs[0] if result.model_strs else None)
+            if models:
+                model = models[0]
+                model_str = getattr(model, "raw", None) or str(model)
+                return (True, model_str)
 
     except Exception as e:
         logger.debug(f"Mace4 error: {e}")
