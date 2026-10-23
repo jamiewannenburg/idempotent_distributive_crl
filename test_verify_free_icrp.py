@@ -64,14 +64,17 @@ def test_load_algebra_from_json_valid():
 
 
 def test_load_algebra_from_json_missing_terms():
-    """Test that loading non-free algebra raises error."""
+    """Test that loading algebra without representative terms computes them via BFS."""
     algebra_data = {
         "name": "Test",
         "cardinality": 2,
         "operations": {
             "*": {"arity": 2, "table": [[0, 1], [1, 1]]},
+            "\\": {"arity": 2, "table": [[0, 1], [0, 0]]},
+            "e": {"arity": 0, "table": 0},
         },
-        # Missing isFree and representativeTerms
+        "generatorIndex": 1,
+        # Missing representativeTerms - should compute them
     }
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -79,8 +82,13 @@ def test_load_algebra_from_json_missing_terms():
         temp_path = Path(f.name)
 
     try:
-        with pytest.raises(ValueError, match="does not contain free algebra metadata"):
-            load_algebra_from_json(temp_path)
+        operations, rep_terms, cardinality = load_algebra_from_json(temp_path)
+        
+        # Should have computed terms via BFS
+        assert cardinality == 2
+        assert len(rep_terms) == 2
+        assert "e" in rep_terms
+        assert "x" in rep_terms
     finally:
         temp_path.unlink()
 
