@@ -12,6 +12,7 @@ from free_algebra import (
     _drain_subprocess_transports,
     _run_asyncio,
     classify_term_order,
+    export_free_algebra,
     write_free_algebra_pdf,
 )
 from tptp_provers import discover_tptp_provers
@@ -256,6 +257,22 @@ if __name__ == "__main__":
             unknown_file.close()
         if not incomparable_file.closed:
             incomparable_file.close()
+        
+        # Export free algebra in all formats
+        output_path = Path(args.output)
+        export_paths = export_free_algebra(
+            equivalence_classes,
+            operations,
+            output_path.with_suffix(""),  # Remove .pdf suffix for base name
+            "Free 1-generated iCRP",
+            generator_term="x",
+        )
+        print(f"Exported free algebra:")
+        print(f"  UACalc: {export_paths['ua']}")
+        print(f"  Mace4:  {export_paths['model']}")
+        print(f"  JSON:   {export_paths['json']}")
+        
+        # Keep PDF output
         write_free_algebra_pdf(equivalence_classes, unknowns, args.output, operations, "ICRP")
     if not completed:
         sys.exit(130)

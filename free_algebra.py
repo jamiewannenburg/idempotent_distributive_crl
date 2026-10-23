@@ -12,6 +12,7 @@ from typing import Any
 import matplotlib.backends.backend_pdf
 import matplotlib.pyplot as plt
 import networkx as nx
+import numpy as np
 from pyp9m4 import ClauseTester, Mace4, Prover9, ProverOutcome, Theory
 
 from tptp_provers import (
@@ -1810,6 +1811,121 @@ async def classify_term_order(
                 equivalence_classes.note_separator(
                     lower, upper, _separator_from_values(equivalence_classes, lower, upper)
                 )
+
+
+def export_free_algebra(
+    order: TermPartialOrder,
+    operations: Sequence[Operation],
+    base_path: Path,
+    name: str,
+    generator_term: str = "x",
+) -> dict[str, Path]:
+    """Export free algebra to .ua, .model, and .json formats.
+    
+    Returns a dict mapping format names to output paths.
+    """
+    from algebra_export import AlgebraExportData, export_to_json, export_to_mace4, export_to_uacalc
+    from draw_orders import hasse_layout
+    
+    base_path = Path(base_path)
+    stem = base_path.stem
+    parent = base_path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    
+    reps = order.representatives()
+    n = len(reps)
+    
+    # Build index mapping: representative term -> integer element
+    index = {rep: i for i, rep in enumerate(reps)}
+    
+    # Build operation tables
+    operations_data = {}
+    
+    for operation in operations:
+        if operation.arity == 0:
+            # Constant
+            result = operation([])
+            if result in index:
+                operations_data[operation.symbol] = {
+                    "arity": 0,
+                    "table": index[result],
+                }
+        elif operation.arity == 2:
+            # Binary operation
+            table = np.zeros((n, n), dtype=int)
+            for i, left in enumerate(reps):
+                for j, right in enumerate(reps):
+                    result = _known_operation_result(order, operation, left, right)
+                    if result is not None and result in index:
+                        table[i, j] = index[result]
+                    else:
+                        # Unknown result - use some default (shouldn't happen for complete algebras)
+                        table[i, j] = 0
+            operations_data[operation.symbol] = {
+                "arity": 2,
+                "table": table,
+            }
+    
+    # Extract order covers
+    covers = [(index[lower], index[upper]) for lower, upper in order.cover_edges()]
+    
+    # Build order relation matrix
+    order_relation = np.zeros((n, n), dtype=bool)
+    for i, rep_i in enumerate(reps):
+        order_relation[i, i] = True  # reflexive
+        for j, rep_j in enumerate(reps):
+            if rep_j in order._above.get(rep_i, set()):
+                order_relation[i, j] = True
+    
+    # Compute layout positions
+    hasse_graph = order.hasse
+    # Map term representatives to integer nodes
+    hasse_int = nx.DiGraph()
+    for node in hasse_graph.nodes():
+        hasse_int.add_node(index[node])
+    for u, v in hasse_graph.edges():
+        hasse_int.add_edge(index[u], index[v])
+    
+    pos = hasse_layout(hasse_int)
+    layout_positions = {node: (float(x), float(y)) for node, (x, y) in pos.items()}
+    
+    # Find generator index
+    generator_index = index.get(generator_term)
+    
+    # Build representative terms list
+    representative_terms = [rep for rep in reps]
+    
+    # Create export data
+    data = AlgebraExportData(
+        name=name,
+        cardinality=n,
+        operations=operations_data,
+        relations=None,
+        order_type="icrp",  # Free iCRP
+        order_relation=order_relation,
+        order_covers=covers,
+        is_free=True,
+        generator_index=generator_index,
+        representative_terms=representative_terms,
+        layout_positions=layout_positions,
+    )
+    
+    # Export to all formats
+    paths = {}
+    
+    ua_path = parent / f"{stem}.ua"
+    export_to_uacalc(data, ua_path)
+    paths["ua"] = ua_path
+    
+    model_path = parent / f"{stem}.model"
+    export_to_mace4(data, model_path)
+    paths["model"] = model_path
+    
+    json_path = parent / f"{stem}.json"
+    export_to_json(data, json_path)
+    paths["json"] = json_path
+    
+    return paths
 
 
 def write_free_algebra_pdf(
