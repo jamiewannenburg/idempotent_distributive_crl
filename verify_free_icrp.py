@@ -488,11 +488,10 @@ async def search_counterexample(
     if mace4 is None:
         return (False, None)
 
-    # Negate the equation to find a counterexample
-    goal = equation if equation.endswith(".") else f"{equation}."
-    negated_goal = f"-({goal[:-1]})."
-
-    theory_text = to_p9m4("\n".join(axioms), negated_goal)
+    # Mace4 searches models of assumptions; it does not treat goals as
+    # constraints. Put the negated equation in the assumption list.
+    body = equation[:-1] if equation.endswith(".") else equation
+    theory_text = to_p9m4("\n".join(axioms) + f"\n-({body}).", "")
 
     try:
         # Search increasing domain sizes (Mace4 has no .run; use models()).
@@ -507,7 +506,7 @@ async def search_counterexample(
             mace4_local = Mace4(options=mace4_options, timeout_s=size_timeout)
 
             models = await asyncio.to_thread(
-                lambda: list(mace4_local.models(input=theory_text))
+                lambda m=mace4_local, t=theory_text: list(m.models(input=t))
             )
             if models:
                 model = models[0]
