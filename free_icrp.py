@@ -218,10 +218,7 @@ if __name__ == "__main__":
         unknown_file.write(formula + "\n")
         unknown_file.flush()
     
-    is_closed = False
-    
     async def classify() -> bool:
-        nonlocal is_closed
         try:
             is_closed = await classify_term_order(
                 operations,
@@ -252,8 +249,16 @@ if __name__ == "__main__":
                     f"(mention terms never generated this run)"
                 )
 
+    # Track closure status
+    is_closed_result = [False]  # Use list to allow mutation in classify()
+    
+    async def classify_wrapper():
+        is_closed_result[0] = await classify()
+        return is_closed_result[0]
+    
     try:
-        completed = _run_asyncio(classify())
+        completed = _run_asyncio(classify_wrapper())
+        is_closed = is_closed_result[0]
     finally:
         if not axioms_file.closed:
             axioms_file.close()
