@@ -1490,11 +1490,13 @@ def _classify_from_models(
     equivalence_classes: TermPartialOrder,
     tables: ModelTables,
     progress: bool,
-) -> None:
+) -> bool:
     """Build the term algebra by evaluating each new term in the models.
 
     Only one representative is kept for each tuple of values. Products of
     older representatives are not generated again.
+    
+    Returns True if the algebra closed (no new terms at some level), False otherwise.
     """
     known: dict[tuple[int, ...], str] = {}
     equivalence_classes._values = {}
@@ -1533,7 +1535,7 @@ def _classify_from_models(
                 equivalence_classes.record_product(operation.symbol, args, result)
         if not new_terms:
             print(f"No new terms at level {level}; terminating.")
-            return
+            return True
         frontier = new_terms
         pool.extend(new_terms)
         if progress:
@@ -1542,6 +1544,9 @@ def _classify_from_models(
         if operation.arity == 2 and operation.idempotent:
             for rep in pool:
                 equivalence_classes.record_product(operation.symbol, (rep, rep), rep)
+    
+    # Reached max_level without closing
+    return False
 
 
 def _record_leq_from_values(
@@ -1738,7 +1743,7 @@ async def classify_term_order(
     try:
         if tables is not None:
             pending.clear()
-            _classify_from_models(
+            is_closed = _classify_from_models(
                 operations,
                 variables,
                 max_level,
@@ -1746,7 +1751,7 @@ async def classify_term_order(
                 tables,
                 progress,
             )
-            return
+            return is_closed
         pool = live(seed_terms(operations, variables))
         apply_lookups()
         pool = live(pool)
@@ -1816,8 +1821,8 @@ async def classify_term_order(
                     lower, upper, _separator_from_values(equivalence_classes, lower, upper)
                 )
     
-    # If we reach here, we hit max_level without closing
-    return False
+        # If we reach here, we hit max_level without closing
+        return False
 
 
 def export_free_algebra(

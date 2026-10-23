@@ -219,6 +219,7 @@ if __name__ == "__main__":
         unknown_file.flush()
     
     async def classify() -> bool:
+        is_closed = None
         try:
             is_closed = await classify_term_order(
                 operations,
@@ -239,6 +240,8 @@ if __name__ == "__main__":
             )
             await _drain_subprocess_transports()
             return is_closed
+        except Exception as e:
+            raise
         finally:
             axioms_file.close()
             unknown_file.close()

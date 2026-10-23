@@ -73,16 +73,16 @@ def export_to_json(data: AlgebraExportData, output_path: Path) -> None:
         json_data["orderCovers"] = data.order_covers
     
     # Free algebra extensions
-    if data.is_free:
-        json_data["isFree"] = True
-        if data.generator_index is not None:
-            json_data["generatorIndex"] = data.generator_index
-        if data.representative_terms:
-            json_data["representativeTerms"] = data.representative_terms
-        if data.layout_positions:
-            json_data["layoutPositions"] = {
-                str(k): list(v) for k, v in data.layout_positions.items()
-            }
+    # Always write isFree to distinguish complete from partial algebras
+    json_data["isFree"] = data.is_free
+    if data.generator_index is not None:
+        json_data["generatorIndex"] = data.generator_index
+    if data.representative_terms:
+        json_data["representativeTerms"] = data.representative_terms
+    if data.layout_positions:
+        json_data["layoutPositions"] = {
+            str(k): list(v) for k, v in data.layout_positions.items()
+        }
     
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
