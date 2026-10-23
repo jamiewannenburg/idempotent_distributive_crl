@@ -268,7 +268,6 @@ if __name__ == "__main__":
             generator_term="x",
         )
         print(f"Exported free algebra:")
-        print(f"  UACalc: {export_paths['ua']}")
         print(f"  Mace4:  {export_paths['model']}")
         print(f"  JSON:   {export_paths['json']}")
         

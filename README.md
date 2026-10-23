@@ -35,16 +35,15 @@ The repository includes tools to export and visualize algebras as standalone, se
 
 ### Exporting Algebras
 
-The `free_icrp.py` script now automatically exports the computed free algebra in three formats:
+The `free_icrp.py` script now automatically exports the computed free algebra in two formats:
 
-- **UACalc format** (`.ua`): XML format compatible with the Universal Algebra Calculator
 - **Mace4 format** (`.model`): Prover9/Mace4 interpretation format
 - **Common JSON format** (`.json`): Includes algebra structure, order information, layout positions, and free-algebra metadata
 
 Example:
 ```bash
 python free_icrp.py --max-level 2 -o output/free_icrp.pdf
-# Also creates: output/free_icrp.ua, output/free_icrp.model, output/free_icrp.json
+# Also creates: output/free_icrp.model, output/free_icrp.json
 ```
 
 ### Generating HTML Viewers
@@ -57,10 +56,9 @@ python algebra_viewer.py <input-file> -o <output.html>
 # Examples:
 python algebra_viewer.py model_outputs/rsi_icrp-3_one_generated.model -o viewer.html
 python algebra_viewer.py output/free_icrp.json -o free_viewer.html
-python algebra_viewer.py ua_outputs/some_algebra.ua -o viewer.html
 ```
 
-Supported input formats: `.model` (Mace4), `.ua` (UACalc), `.json` (common format)
+Supported input formats: `.model` (Mace4), `.json` (common format)
 
 ### HTML Viewer Features
 

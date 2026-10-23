@@ -1,4 +1,4 @@
-"""Export algebras to multiple formats: UACalc .ua, Mace4 model, and JSON.
+"""Export algebras to multiple formats: Mace4 model and JSON.
 
 Supports both regular algebras and free algebras with additional metadata.
 """
@@ -14,7 +14,6 @@ from typing import Any
 import numpy as np
 from pyp9m4 import Model
 
-from uacalc_lib import io as ua_io
 
 
 @dataclass
@@ -154,39 +153,6 @@ def _format_mace4_table(table: Any, cardinality: int, arity: int) -> str:
     return ",".join(parts)
 
 
-def export_to_uacalc(data: AlgebraExportData, output_path: Path) -> None:
-    """Export algebra to UACalc .ua format using uacalc_lib."""
-    from uacalc_lib import Algebra, Operation as UAOperation
-    
-    # Build operations
-    ua_operations = []
-    for symbol, op_data in data.operations.items():
-        arity = op_data["arity"]
-        table = op_data["table"]
-        
-        if isinstance(table, np.ndarray):
-            table = table.tolist()
-        elif isinstance(table, int):
-            table = [table]
-        
-        ua_op = UAOperation(symbol, arity, table)
-        ua_operations.append(ua_op)
-    
-    # Create algebra
-    algebra = Algebra(data.name, data.cardinality, ua_operations)
-    
-    # Write to file
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    ua_io.write_algebra_file(algebra, str(output_path))
-    
-    # uacalc_lib appends .xml if path doesn't end with .xml
-    xml_path = Path(str(output_path) + ".xml")
-    if xml_path.is_file():
-        if output_path.exists():
-            output_path.unlink()
-        xml_path.rename(output_path)
-
-
 def model_to_export_data(
     model: Model,
     order_type: str | None = None,
@@ -261,7 +227,7 @@ def export_model_all_formats(
     order_relation: np.ndarray | None = None,
     order_covers: list[tuple[int, int]] | None = None,
 ) -> dict[str, Path]:
-    """Export a Model to .ua, .model, and .json formats."""
+    """Export a Model to .model and .json formats."""
     base_path = Path(base_path)
     stem = base_path.stem
     parent = base_path.parent
@@ -271,10 +237,6 @@ def export_model_all_formats(
     paths = {}
     
     # Export to each format
-    ua_path = parent / f"{stem}.ua"
-    export_to_uacalc(data, ua_path)
-    paths["ua"] = ua_path
-    
     model_path = parent / f"{stem}.model"
     export_to_mace4(data, model_path)
     paths["model"] = model_path

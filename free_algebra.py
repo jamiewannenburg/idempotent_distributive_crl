@@ -1820,11 +1820,11 @@ def export_free_algebra(
     name: str,
     generator_term: str = "x",
 ) -> dict[str, Path]:
-    """Export free algebra to .ua, .model, and .json formats.
+    """Export free algebra to .model and .json formats.
     
     Returns a dict mapping format names to output paths.
     """
-    from algebra_export import AlgebraExportData, export_to_json, export_to_mace4, export_to_uacalc
+    from algebra_export import AlgebraExportData, export_to_json, export_to_mace4
     from draw_orders import hasse_layout
     
     base_path = Path(base_path)
@@ -1912,10 +1912,6 @@ def export_free_algebra(
     
     # Export to all formats
     paths = {}
-    
-    ua_path = parent / f"{stem}.ua"
-    export_to_uacalc(data, ua_path)
-    paths["ua"] = ua_path
     
     model_path = parent / f"{stem}.model"
     export_to_mace4(data, model_path)

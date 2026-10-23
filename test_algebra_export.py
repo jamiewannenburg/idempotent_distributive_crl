@@ -12,7 +12,6 @@ from algebra_export import (
     AlgebraExportData,
     export_to_json,
     export_to_mace4,
-    export_to_uacalc,
     model_to_export_data,
 )
 from algebra_viewer import (
@@ -20,7 +19,6 @@ from algebra_viewer import (
     generate_html_viewer,
     load_algebra_from_json,
     load_algebra_from_mace4,
-    load_algebra_from_uacalc,
 )
 
 
@@ -94,29 +92,6 @@ def test_export_mace4():
         assert "function(e," in content
 
 
-def test_export_uacalc():
-    """Test export to UACalc format."""
-    data = AlgebraExportData(
-        name="test_2",
-        cardinality=2,
-        operations={
-            "*": {"arity": 2, "table": np.array([[0, 1], [1, 1]])},
-            "\\": {"arity": 2, "table": np.array([[0, 1], [0, 0]])},
-            "e": {"arity": 0, "table": 0},
-        },
-    )
-    
-    with tempfile.TemporaryDirectory() as tmpdir:
-        ua_path = Path(tmpdir) / "test.ua"
-        export_to_uacalc(data, ua_path)
-        
-        assert ua_path.exists()
-        content = ua_path.read_text()
-        assert "<?xml version=" in content
-        assert "<algebra>" in content
-        assert "<algName>test_2</algName>" in content
-
-
 def test_compute_order_for_icrp():
     """Test order computation for iCRP."""
     # Simple 2-element iCRP
@@ -187,7 +162,7 @@ def test_html_viewer_with_free_algebra():
 
 
 def test_round_trip_all_formats():
-    """Test round-trip through all formats."""
+    """Test round-trip through JSON and Mace4 formats."""
     model_path = Path("model_outputs/rsi_icrp-2_one_generated.model")
     if not model_path.exists():
         pytest.skip(f"Test model not found: {model_path}")
@@ -198,28 +173,23 @@ def test_round_trip_all_formats():
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         
-        # Export to all formats
+        # Export to formats
         json_path = tmpdir / "test.json"
         export_to_json(data, json_path)
-        
-        ua_path = tmpdir / "test.ua"
-        export_to_uacalc(data, ua_path)
         
         model_out_path = tmpdir / "test.model"
         export_to_mace4(data, model_out_path)
         
         # Load back from each format
         data_from_json = load_algebra_from_json(json_path)
-        data_from_ua = load_algebra_from_uacalc(ua_path)
         data_from_model = load_algebra_from_mace4(model_out_path)
         
         # Check cardinality matches
         assert data_from_json.cardinality == data.cardinality
-        assert data_from_ua.cardinality == data.cardinality
         assert data_from_model.cardinality == data.cardinality
         
         # Check operations exist
-        for fmt_data in [data_from_json, data_from_ua, data_from_model]:
+        for fmt_data in [data_from_json, data_from_model]:
             assert "*" in fmt_data.operations
             assert "\\" in fmt_data.operations
 

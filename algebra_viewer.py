@@ -1,6 +1,6 @@
 """Generate standalone HTML viewers for algebra visualizations.
 
-Reads algebras from .ua, .model, or .json formats and produces a single
+Reads algebras from .model or .json formats and produces a single
 self-contained HTML file with:
 - Interactive Hasse diagram (zoomable/pannable)
 - Operation tables (virtualized for large algebras)
@@ -77,51 +77,6 @@ def load_algebra_from_json(json_path: Path) -> AlgebraExportData:
         generator_index=generator_index,
         representative_terms=representative_terms,
         layout_positions=layout_positions,
-    )
-
-
-def load_algebra_from_uacalc(ua_path: Path) -> AlgebraExportData:
-    """Load algebra from UACalc .ua file."""
-    from uacalc_lib import io as ua_io
-    
-    algebra = ua_io.parse_algebra_file(str(ua_path))
-    
-    # Extract operations
-    operations = {}
-    for op in algebra.operations():
-        symbol = op.symbol().name()
-        arity = op.arity()
-        
-        if arity == 0:
-            table = op.valueAt([])
-        else:
-            # Build operation table
-            if arity == 1:
-                table = np.array([op.valueAt([i]) for i in range(algebra.cardinality())])
-            elif arity == 2:
-                table = np.array([[op.valueAt([i, j]) for j in range(algebra.cardinality())]
-                                  for i in range(algebra.cardinality())])
-            else:
-                # Higher arity - flatten representation
-                table = []
-                def enumerate_tuples(n, k):
-                    if k == 0:
-                        yield []
-                    else:
-                        for i in range(n):
-                            for rest in enumerate_tuples(n, k - 1):
-                                yield [i] + rest
-                
-                for args in enumerate_tuples(algebra.cardinality(), arity):
-                    table.append(op.valueAt(args))
-                table = np.array(table)
-        
-        operations[symbol] = {"arity": arity, "table": table}
-    
-    return AlgebraExportData(
-        name=algebra.name(),
-        cardinality=algebra.cardinality(),
-        operations=operations,
     )
 
 
@@ -1223,7 +1178,7 @@ def main() -> None:
     parser.add_argument(
         "input",
         type=Path,
-        help="Input file (.ua, .model, or .json)",
+        help="Input file (.model or .json)",
     )
     parser.add_argument(
         "-o",
@@ -1258,15 +1213,12 @@ def main() -> None:
         if suffix == ".json":
             print(f"Loading from JSON: {input_path}")
             data = load_algebra_from_json(input_path)
-        elif suffix == ".ua":
-            print(f"Loading from UACalc: {input_path}")
-            data = load_algebra_from_uacalc(input_path)
         elif suffix == ".model":
             print(f"Loading from Mace4: {input_path}")
             data = load_algebra_from_mace4(input_path)
         else:
             print(f"Error: unsupported file type: {suffix}", file=sys.stderr)
-            print("Supported formats: .json, .ua, .model", file=sys.stderr)
+            print("Supported formats: .json, .model", file=sys.stderr)
             sys.exit(1)
         
         # Override order type if specified

@@ -6,7 +6,6 @@ from pathlib import Path
 from algebra_viewer import (
     generate_html_viewer,
     load_algebra_from_mace4,
-    load_algebra_from_uacalc,
 )
 
 
@@ -39,19 +38,7 @@ def main():
         except Exception as e:
             print(f"  ✗ Error: {e}", file=sys.stderr)
     
-    # Example 3: From UACalc if available
-    ua_path = Path("ua_outputs/rsi_icrp-2_one_generated/rsi_icrp-2_one_generated.ua")
-    if ua_path.exists():
-        print(f"Generating example from {ua_path}...")
-        try:
-            data = load_algebra_from_uacalc(ua_path)
-            html_path = examples_dir / "rsi_icrp-2_from_ua.html"
-            generate_html_viewer(data, html_path, title="RSI iCRP (2 elements, from UACalc)")
-            print(f"  ✓ Generated: {html_path}")
-        except Exception as e:
-            print(f"  ✗ Error: {e}", file=sys.stderr)
-    
-    # Example 4: Larger algebra if available
+    # Example 3: Larger algebra if available
     model_path = Path("model_outputs/rsi_icrp-5_one_generated.model")
     if model_path.exists():
         print(f"Generating example from {model_path}...")
