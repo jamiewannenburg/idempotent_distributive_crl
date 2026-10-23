@@ -66,6 +66,9 @@ class EquationResult:
     counterexample: str | None = None  # Mace4 model (if refuted)
     index: int | None = None  # position in the generated equation list
     description: str | None = None
+    # Pass that produced an "unknown": 1 = short first pass (retried in pass 2),
+    # 2 / None = final (None for checkpoints written before two-pass scheduling).
+    pass_no: int | None = None
 
 
 @dataclass
@@ -534,8 +537,12 @@ async def verify_equation(
     counterexample_max_size: int,
     counterexample_timeout_s: float,
     counterexample_axioms: list[str] | None = None,
+    search_counterexamples: bool = True,
 ) -> EquationResult:
     """Verify a single equation: try to prove it, then search for counterexamples.
+
+    With *search_counterexamples* false, an unproved equation is returned as
+    "unknown" without running Mace4 (used for the short first pass).
 
     *counterexample_axioms* (default: *axioms*) are given to Mace4. Lemmas are
     consequences of the base axioms, so the base axioms alone suffice there and
@@ -553,6 +560,9 @@ async def verify_equation(
             prover=prover_name,
             time_s=proof_time,
         )
+
+    if not search_counterexamples:
+        return EquationResult(equation=equation, status="unknown", time_s=proof_time)
 
     # Search for counterexample
     found_counter, model_str = await search_counterexample(
@@ -639,6 +649,7 @@ def _verify_equation_worker(
     counterexample_axioms: list[str] | None = None,
     use_prover9: bool = True,
     tptp_include: list[str] | None = None,
+    search_counterexamples: bool = True,
 ) -> EquationResult:
     """Worker function for parallel verification (runs in subprocess)."""
     # Setup provers in worker process
@@ -675,6 +686,7 @@ def _verify_equation_worker(
             counterexample_max_size,
             counterexample_timeout_s,
             counterexample_axioms,
+            search_counterexamples,
         )
     )
 
@@ -725,8 +737,16 @@ async def verify_algebra(
     use_congruence: bool = True,
     use_prover9: bool = True,
     tptp_include: list[str] | None = None,
+    first_pass_timeout_s: float | None = None,
 ):
     """Main verification routine.
+
+    Two-pass scheduling (when *first_pass_timeout_s* is set and shorter than
+    *proof_timeout_s*): pass 1 tries every open equation with the short timeout
+    and no counterexample search; pass 2 retries only the pass-1 unknowns with
+    *proof_timeout_s* (after re-checking congruence closure against the larger
+    lemma set) and runs Mace4 on whatever is still unknown. The checkpoint
+    records the pass of every unknown, so ``--resume`` works mid-pass.
 
     Equations are dispatched to a pool of *parallel* worker processes, shortest
     first, with a rolling window: a new equation starts as soon as any worker is
@@ -771,7 +791,9 @@ async def verify_algebra(
             if r.index is None:
                 r.index = k
         logger.info(f"Resuming from checkpoint: {len(results)}/{len(equations)} equations done")
-    done = {r.index for r in results}
+    two_pass = first_pass_timeout_s is not None and 0 < first_pass_timeout_s < proof_timeout_s
+    by_index: dict[int, EquationResult] = {r.index: r for r in results}
+    done = set(by_index)
 
     congruence: CongruenceClosure | None = None
     if use_congruence:
@@ -789,9 +811,11 @@ async def verify_algebra(
     logger.info(f"Seed lemmas: {len(seed_lemmas)}; proof timeout {proof_timeout_s}s; parallel {parallel}")
 
     total = len(equations)
-    order = sorted((k for k in range(total) if k not in done), key=lambda k: (len(equations[k][0]), k))
+    def shortest_first(indices) -> list[int]:
+        return sorted(indices, key=lambda k: (len(equations[k][0]), k))
+
     counts = {"proved": 0, "refuted": 0, "unknown": 0}
-    for r in results:
+    for r in by_index.values():
         counts[r.status] = counts.get(r.status, 0) + 1
     start_time = time.time()
     last_save = 0.0
@@ -802,12 +826,22 @@ async def verify_algebra(
             k += 1
         return k
 
+    def save() -> None:
+        results[:] = sorted(by_index.values(), key=lambda r: r.index)
+        save_checkpoint(checkpoint_path, results, proven_lemmas, first_undone())
+
+    def pass1_unknown() -> int:
+        return sum(1 for r in by_index.values() if r.status == "unknown" and r.pass_no == 1)
+
     def record(k: int, result: EquationResult) -> None:
         nonlocal last_save
         equation, description = equations[k]
         result.index = k
         result.description = description
-        results.append(result)
+        previous = by_index.get(k)
+        if previous is not None:
+            counts[previous.status] -= 1
+        by_index[k] = result
         done.add(k)
         counts[result.status] = counts.get(result.status, 0) + 1
         if result.status == "proved":
@@ -825,71 +859,99 @@ async def verify_algebra(
                 counter_path = counterexamples_dir / f"counter_{k:06d}.model"
                 counter_path.write_text(result.counterexample, encoding="utf-8")
         else:
-            logger.warning(f"  [{k+1}] {description}: UNKNOWN after {result.time_s:.0f}s: {equation}")
+            if result.pass_no == 1:
+                logger.info(f"  [{k+1}] {description}: deferred to pass 2 after {result.time_s:.0f}s")
+            else:
+                logger.warning(f"  [{k+1}] {description}: UNKNOWN after {result.time_s:.0f}s: {equation}")
         now = time.time()
         if now - last_save > 30:
-            save_checkpoint(checkpoint_path, results, proven_lemmas, first_undone())
+            save()
             last_save = now
             elapsed = now - start_time
             n_done = len(done)
             logger.info(
                 f"Progress: {n_done}/{total} done (proved {counts['proved']}, "
-                f"unknown {counts['unknown']}, refuted {counts['refuted']}), "
+                f"unknown {counts['unknown']} [{pass1_unknown()} awaiting pass 2], "
+                f"refuted {counts['refuted']}), "
                 f"elapsed {elapsed/3600:.2f}h"
             )
 
-    queue = deque(order)
-    with ProcessPoolExecutor(max_workers=max(1, parallel)) as pool:
-        running: dict[Any, int] = {}
-        while queue or running:
-            while queue and len(running) < max(1, parallel):
-                k = queue.popleft()
-                equation, description = equations[k]
-                if congruence is not None and congruence.equation_holds(equation):
-                    record(k, EquationResult(equation=equation, status="proved", prover="congruence"))
-                    continue
-                current_axioms = axiom_base + seed_lemmas
-                if use_lemmas:
-                    current_axioms = current_axioms + (
-                        proven_lemmas[-max_lemmas:] if max_lemmas > 0 else proven_lemmas
+    def run_pass(indices: list[int], timeout_s: float, pass_no: int, counterexamples: bool) -> None:
+        queue = deque(indices)
+        with ProcessPoolExecutor(max_workers=max(1, parallel)) as pool:
+            running: dict[Any, int] = {}
+            while queue or running:
+                while queue and len(running) < max(1, parallel):
+                    k = queue.popleft()
+                    equation, description = equations[k]
+                    if congruence is not None and congruence.equation_holds(equation):
+                        record(k, EquationResult(equation=equation, status="proved", prover="congruence"))
+                        continue
+                    current_axioms = axiom_base + seed_lemmas
+                    if use_lemmas:
+                        current_axioms = current_axioms + (
+                            proven_lemmas[-max_lemmas:] if max_lemmas > 0 else proven_lemmas
+                        )
+                    future = pool.submit(
+                        _verify_equation_worker,
+                        equation,
+                        description,
+                        current_axioms,
+                        timeout_s,
+                        counterexample_min_size,
+                        counterexample_max_size,
+                        counterexample_timeout_s,
+                        no_tptp,
+                        axiom_base,
+                        use_prover9,
+                        tptp_include,
+                        counterexamples,
                     )
-                future = pool.submit(
-                    _verify_equation_worker,
-                    equation,
-                    description,
-                    current_axioms,
-                    proof_timeout_s,
-                    counterexample_min_size,
-                    counterexample_max_size,
-                    counterexample_timeout_s,
-                    no_tptp,
-                    axiom_base,
-                    use_prover9,
-                    tptp_include,
-                )
-                running[future] = k
-            if not running:
-                continue
-            finished, _ = wait(list(running), return_when=FIRST_COMPLETED)
-            for future in finished:
-                k = running.pop(future)
-                try:
-                    result = future.result()
-                except Exception as exc:  # worker crash: record as unknown
-                    logger.error(f"  [{k+1}] worker error: {exc}")
-                    result = EquationResult(equation=equations[k][0], status="unknown")
-                record(k, result)
+                    running[future] = k
+                if not running:
+                    continue
+                finished, _ = wait(list(running), return_when=FIRST_COMPLETED)
+                for future in finished:
+                    k = running.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:  # worker crash: record as unknown
+                        logger.error(f"  [{k+1}] worker error: {exc}")
+                        result = EquationResult(equation=equations[k][0], status="unknown")
+                    if result.status == "unknown":
+                        result.pass_no = pass_no
+                    record(k, result)
+
+    try:
+        if two_pass:
+            pass1 = shortest_first(k for k in range(total) if k not in done)
+            logger.info(f"Pass 1: {len(pass1)} open equations, timeout {first_pass_timeout_s}s, no counterexample search")
+            run_pass(pass1, first_pass_timeout_s, 1, counterexamples=False)
+            save()
+            pass2 = shortest_first(
+                k for k, r in by_index.items() if r.status == "unknown" and r.pass_no == 1
+            )
+            logger.info(f"Pass 2: retrying {len(pass2)} pass-1 unknowns, timeout {proof_timeout_s}s")
+            run_pass(pass2, proof_timeout_s, 2, counterexamples=True)
+        else:
+            # Single pass; also finishes pass-1 unknowns left by an earlier two-pass run.
+            todo = [k for k in range(total) if k not in done] + [
+                k for k, r in by_index.items() if r.status == "unknown" and r.pass_no == 1
+            ]
+            run_pass(shortest_first(todo), proof_timeout_s, 2, counterexamples=True)
+    finally:
+        save()
 
     # Unknowns may follow from equations proven later.
     if congruence is not None:
         upgraded = 0
-        for r in results:
+        for r in by_index.values():
             if r.status == "unknown" and congruence.equation_holds(r.equation):
                 r.status, r.prover = "proved", "congruence"
                 upgraded += 1
         if upgraded:
             logger.info(f"Congruence closure upgraded {upgraded} unknown equations to proved")
-    save_checkpoint(checkpoint_path, results, proven_lemmas, first_undone())
+    save()
 
     # Generate summary
     proved_count = sum(1 for r in results if r.status == "proved")
@@ -982,6 +1044,14 @@ def main():
         type=float,
         default=30.0,
         help="Timeout in seconds for each proof attempt (default: 30)",
+    )
+
+    parser.add_argument(
+        "--first-pass-timeout",
+        type=float,
+        default=120.0,
+        help="Pass 1 tries every equation with this timeout (no Mace4); pass 2 retries "
+        "the unknowns with --proof-timeout. 0 = single pass (default: 120)",
     )
 
     parser.add_argument(
@@ -1123,6 +1193,7 @@ def main():
             use_congruence=not args.no_congruence,
             use_prover9=not args.no_prover9,
             tptp_include=tptp_include,
+            first_pass_timeout_s=args.first_pass_timeout,
         )
     )
 

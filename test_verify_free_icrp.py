@@ -353,3 +353,90 @@ def test_generate_equations_respects_term_order():
 if __name__ == "__main__":
     # Run with: python -m pytest test_verify_free_icrp.py -v
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.asyncio
+async def test_verify_equation_first_pass_skips_mace4():
+    """Pass 1 (search_counterexamples=False) must not run Mace4."""
+    with patch("verify_free_icrp.try_prove_equation", new_callable=AsyncMock) as mock_prove, \
+         patch("verify_free_icrp.search_counterexample", new_callable=AsyncMock) as mock_counter:
+        mock_prove.return_value = (False, None, 2.0)
+        result = await verify_equation(
+            equation="(x \\ e) = x",
+            description="d",
+            axioms=["x = x."],
+            prover9=MagicMock(),
+            mace4=MagicMock(),
+            tptp_provers=[],
+            proof_timeout_s=1.0,
+            counterexample_min_size=2,
+            counterexample_max_size=3,
+            counterexample_timeout_s=1.0,
+            search_counterexamples=False,
+        )
+        assert result.status == "unknown"
+        mock_counter.assert_not_called()
+
+
+def test_checkpoint_pass_no_roundtrip_and_old_format():
+    """pass_no survives a checkpoint; old checkpoints without it still load."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "checkpoint.json"
+        save_checkpoint(
+            path,
+            [EquationResult(equation="e = e", status="unknown", index=5, pass_no=1)],
+            [],
+            0,
+        )
+        loaded = load_checkpoint(path)
+        assert loaded.results[0].pass_no == 1 and loaded.results[0].index == 5
+
+        path.write_text(json.dumps({
+            "results": [{"equation": "e = e", "status": "proved", "prover": "vampire",
+                         "time_s": 1.0, "counterexample": None}],
+            "proven_lemmas": ["e = e."], "next_index": 1, "timestamp": 0.0,
+        }))
+        old = load_checkpoint(path)
+        assert old.results[0].pass_no is None and old.results[0].status == "proved"
+
+
+def test_two_pass_scheduling_and_resume(tmp_path, monkeypatch):
+    """Pass-1 unknowns are retried in pass 2 with the long timeout; resume keeps progress."""
+    import verify_free_icrp as v
+
+    algebra = tmp_path / "a.json"
+    algebra.write_text(json.dumps(create_test_algebra_json(
+        2,
+        {"*": {"arity": 2, "table": [[0, 1], [1, 1]]}, "e": {"arity": 0, "table": 0}},
+        ["e", "x"],
+    )))
+    calls = []
+
+    def fake_worker(equation, description, axioms, timeout, cmin, cmax, ctimeout,
+                    no_tptp, cax=None, use_p9=True, include=None, counterexamples=True):
+        calls.append((equation, timeout, counterexamples))
+        # "(x * x) = x" needs the long timeout; everything else is easy.
+        if equation == "(x * x) = x" and timeout < 100:
+            return EquationResult(equation=equation, status="unknown", time_s=timeout)
+        return EquationResult(equation=equation, status="proved", prover="fake")
+
+    monkeypatch.setattr(v, "_verify_equation_worker", fake_worker)
+    # Run in-process: a thread pool sees the patched function and the calls list.
+    from concurrent.futures import ThreadPoolExecutor
+    monkeypatch.setattr(v, "ProcessPoolExecutor", ThreadPoolExecutor)
+    kwargs = dict(
+        algebra_path=algebra, output_dir=tmp_path / "out", axiom_base=["x = x."],
+        proof_timeout_s=1000.0, counterexample_min_size=2, counterexample_max_size=3,
+        counterexample_timeout_s=1.0, resume=True, use_lemmas=True, max_lemmas=10,
+        no_tptp=True, parallel=2, generator_index=1, use_congruence=False,
+        use_prover9=False, first_pass_timeout_s=10.0,
+    )
+    assert asyncio.run(v.verify_algebra(**kwargs)) is True
+    long_calls = [c for c in calls if c[1] == 1000.0]
+    assert long_calls == [("(x * x) = x", 1000.0, True)]
+    assert all(c[2] is False for c in calls if c[1] == 10.0)
+
+    # Resume: nothing left to do, no further prover calls.
+    calls.clear()
+    assert asyncio.run(v.verify_algebra(**kwargs)) is True
+    assert calls == []
