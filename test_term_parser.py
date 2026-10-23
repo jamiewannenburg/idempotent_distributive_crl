@@ -49,7 +49,7 @@ def test_term_parser_structure():
         assert "function evaluateTerm(" in content
         
         # Check for operator handling
-        assert "tokens[newPos].value === '\\\\\\\\'" in content  # Arrow operator (backslash)
+        assert "tokens[newPos].value === '\\\\'" in content  # Arrow operator (backslash in JS)
         assert "tokens[newPos].value === '*'" in content
         
         # Check for generator handling

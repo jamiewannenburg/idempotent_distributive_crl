@@ -301,15 +301,18 @@ def test_load_real_model_file():
     """Test loading a real model file (if available).
     
     This test is skipped if the model file doesn't exist.
-    Note: This will fail unless the model includes representative terms in comments.
+    Now computes representative terms via BFS if not in comments.
     """
     from verify_free_icrp import load_algebra_from_model
 
     model_path = Path("model_outputs/rsi_icrp-2_one_generated.model")
     
-    # This should raise an error since the model doesn't have representative terms
-    with pytest.raises(ValueError, match="does not contain representative terms"):
-        load_algebra_from_model(model_path)
+    # Should successfully load and compute terms via BFS
+    operations, rep_terms, cardinality = load_algebra_from_model(model_path)
+    
+    assert cardinality > 0
+    assert len(rep_terms) == cardinality
+    assert "e" in rep_terms or "elem_0" in rep_terms[0]  # Either e or computed elem_N
 
 
 def test_generate_equations_respects_term_order():
