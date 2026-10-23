@@ -30,7 +30,7 @@ import argparse
 import asyncio
 import json
 import logging
-import multiprocessing as mp
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import sys
 import time
 from collections import deque
@@ -44,6 +44,7 @@ from pyp9m4 import Mace4, Prover9, ProverOutcome
 from pyp9m4.options import Mace4CliOptions, Prover9CliOptions
 
 from axioms import icrp_axioms, to_p9m4
+from term_congruence import CongruenceClosure, TermParseError, parse_formula
 from tptp_provers import (
     TptpProverSpec,
     convert_ladr_to_tptp,
@@ -63,6 +64,8 @@ class EquationResult:
     prover: str | None = None  # Which prover succeeded (if proved)
     time_s: float = 0.0
     counterexample: str | None = None  # Mace4 model (if refuted)
+    index: int | None = None  # position in the generated equation list
+    description: str | None = None
 
 
 @dataclass
@@ -530,8 +533,14 @@ async def verify_equation(
     counterexample_min_size: int,
     counterexample_max_size: int,
     counterexample_timeout_s: float,
+    counterexample_axioms: list[str] | None = None,
 ) -> EquationResult:
-    """Verify a single equation: try to prove it, then search for counterexamples."""
+    """Verify a single equation: try to prove it, then search for counterexamples.
+
+    *counterexample_axioms* (default: *axioms*) are given to Mace4. Lemmas are
+    consequences of the base axioms, so the base axioms alone suffice there and
+    keep Mace4 fast.
+    """
     # Try to prove
     proved, prover_name, proof_time = await try_prove_equation(
         equation, axioms, prover9, tptp_provers, proof_timeout_s
@@ -548,7 +557,7 @@ async def verify_equation(
     # Search for counterexample
     found_counter, model_str = await search_counterexample(
         equation,
-        axioms,
+        counterexample_axioms if counterexample_axioms is not None else axioms,
         mace4,
         counterexample_min_size,
         counterexample_max_size,
@@ -605,7 +614,8 @@ def load_checkpoint(checkpoint_path: Path) -> VerificationCheckpoint | None:
         with open(checkpoint_path, encoding="utf-8") as f:
             data = json.load(f)
 
-        results = [EquationResult(**r) for r in data["results"]]
+        known = set(EquationResult.__dataclass_fields__)
+        results = [EquationResult(**{k: v for k, v in r.items() if k in known}) for r in data["results"]]
         return VerificationCheckpoint(
             results=results,
             proven_lemmas=data["proven_lemmas"],
@@ -626,12 +636,19 @@ def _verify_equation_worker(
     counterexample_max_size: int,
     counterexample_timeout_s: float,
     no_tptp: bool,
+    counterexample_axioms: list[str] | None = None,
+    use_prover9: bool = True,
+    tptp_include: list[str] | None = None,
 ) -> EquationResult:
     """Worker function for parallel verification (runs in subprocess)."""
     # Setup provers in worker process
-    prover9 = Prover9(
-        options=Prover9CliOptions(max_seconds=int(proof_timeout_s)),
-        timeout_s=proof_timeout_s,
+    prover9 = (
+        Prover9(
+            options=Prover9CliOptions(max_seconds=int(proof_timeout_s)),
+            timeout_s=proof_timeout_s,
+        )
+        if use_prover9
+        else None
     )
 
     mace4 = Mace4(
@@ -642,7 +659,7 @@ def _verify_equation_worker(
         timeout_s=counterexample_timeout_s,
     )
 
-    tptp_provers = [] if no_tptp else discover_tptp_provers()
+    tptp_provers = [] if no_tptp else discover_tptp_provers(include=tptp_include)
 
     # Run verification synchronously in worker
     result = asyncio.run(
@@ -657,10 +674,37 @@ def _verify_equation_worker(
             counterexample_min_size,
             counterexample_max_size,
             counterexample_timeout_s,
+            counterexample_axioms,
         )
     )
 
     return result
+
+
+def load_seed_lemmas(paths: Sequence[Path]) -> list[str]:
+    """Read already-proven statements (one formula per line, ``%`` comments).
+
+    Every line must parse as a fully parenthesised ``s = t.`` or ``s <= t.`` over
+    ``x``, ``e``, ``*`` and ``\\`` (the format ``free_icrp.py`` writes);
+    otherwise a ``ValueError`` names the offending line.
+    """
+    lemmas: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        for lineno, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+            formula = line.strip()
+            if not formula or formula.startswith("%"):
+                continue
+            if not formula.endswith("."):
+                formula += "."
+            try:
+                parse_formula(formula)
+            except TermParseError as exc:
+                raise ValueError(f"{path}:{lineno}: cannot parse seed lemma {formula!r}: {exc}") from exc
+            if formula not in seen:
+                seen.add(formula)
+                lemmas.append(formula)
+    return lemmas
 
 
 async def verify_algebra(
@@ -677,14 +721,25 @@ async def verify_algebra(
     no_tptp: bool,
     parallel: int,
     generator_index: int,
+    seed_lemmas: list[str] | None = None,
+    use_congruence: bool = True,
+    use_prover9: bool = True,
+    tptp_include: list[str] | None = None,
 ):
-    """Main verification routine with optional parallel execution.
-    
-    When parallel > 1, processes equations in batches to maintain sound lemma sharing:
-    - Only lemmas proven BEFORE a batch starts are used in that batch
-    - Each batch is verified in parallel
-    - Proven equations from batch N become lemmas for batch N+1
+    """Main verification routine.
+
+    Equations are dispatched to a pool of *parallel* worker processes, shortest
+    first, with a rolling window: a new equation starts as soon as any worker is
+    free, so one slow (timed-out) equation never stalls the others. Each prover
+    call sees the base axioms, the *seed_lemmas* (statements proven earlier, e.g.
+    by ``free_icrp.py``) and up to *max_lemmas* table equations proven so far.
+    This is sound: every lemma was proven before the call that uses it started.
+
+    With *use_congruence*, an equation that already follows from the seeds and
+    proven equations by congruence closure (plus commutativity, idempotence and
+    unit instances for ``*``) is marked proved by ``congruence`` without a prover.
     """
+    seed_lemmas = list(seed_lemmas or [])
     # Load the algebra
     logger.info(f"Loading algebra from {algebra_path}")
     operations, representative_terms, cardinality = load_algebra(
@@ -707,159 +762,134 @@ async def verify_algebra(
 
     # Load checkpoint if resuming
     checkpoint = load_checkpoint(checkpoint_path) if resume else None
+    results: list[EquationResult] = []
+    proven_lemmas: list[str] = []
     if checkpoint:
-        logger.info(
-            f"Resuming from checkpoint: {checkpoint.next_index}/{len(equations)} equations verified"
-        )
         results = checkpoint.results
         proven_lemmas = checkpoint.proven_lemmas
-        start_index = checkpoint.next_index
-    else:
-        results = []
-        proven_lemmas = []
-        start_index = 0
+        for k, r in enumerate(results):  # old checkpoints: results in order
+            if r.index is None:
+                r.index = k
+        logger.info(f"Resuming from checkpoint: {len(results)}/{len(equations)} equations done")
+    done = {r.index for r in results}
 
-    # Setup provers (for non-parallel case)
-    prover9 = Prover9(
-        options=Prover9CliOptions(max_seconds=int(proof_timeout_s)),
-        timeout_s=proof_timeout_s,
-    )
+    congruence: CongruenceClosure | None = None
+    if use_congruence:
+        congruence = CongruenceClosure()
+        for formula in seed_lemmas + proven_lemmas:
+            congruence.add_formula(formula)
+        merged = congruence.saturate_order()
+        logger.info(
+            f"Congruence closure: {congruence.equations_added} equations, "
+            f"{congruence.inequalities_added} inequalities, {merged} order merges"
+        )
 
-    mace4 = Mace4(
-        options=Mace4CliOptions(
-            max_seconds=int(counterexample_timeout_s),
-            max_models=1,
-        ),
-        timeout_s=counterexample_timeout_s,
-    )
+    tptp_names = [] if no_tptp else [p.name for p in discover_tptp_provers(include=tptp_include)]
+    logger.info(f"Provers: {(['prover9'] if use_prover9 else []) + tptp_names}")
+    logger.info(f"Seed lemmas: {len(seed_lemmas)}; proof timeout {proof_timeout_s}s; parallel {parallel}")
 
-    tptp_provers = [] if no_tptp else discover_tptp_provers()
-    if tptp_provers:
-        logger.info(f"TPTP provers: {[p.name for p in tptp_provers]}")
-
-    # Verify equations
     total = len(equations)
-    
-    if parallel <= 1:
-        # Sequential verification
-        for i in range(start_index, total):
-            equation, description = equations[i]
+    order = sorted((k for k in range(total) if k not in done), key=lambda k: (len(equations[k][0]), k))
+    counts = {"proved": 0, "refuted": 0, "unknown": 0}
+    for r in results:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    start_time = time.time()
+    last_save = 0.0
 
-            # Build current axiom set
-            current_axioms = axiom_base.copy()
-            if use_lemmas:
-                # Add most recent proven lemmas (limit to avoid bloat)
-                lemmas_to_add = proven_lemmas[-max_lemmas:] if max_lemmas > 0 else proven_lemmas
-                current_axioms.extend(lemmas_to_add)
+    def first_undone() -> int:
+        k = 0
+        while k in done:
+            k += 1
+        return k
 
-            logger.info(f"\n[{i+1}/{total}] Verifying: {description}")
-            logger.info(f"  Equation: {equation}")
-            logger.info(f"  Axioms: {len(current_axioms)} ({len(axiom_base)} base + {len(lemmas_to_add) if use_lemmas else 0} lemmas)")
-
-            # Verify the equation
-            result = await verify_equation(
-                equation,
-                description,
-                current_axioms,
-                prover9,
-                mace4,
-                tptp_provers,
-                proof_timeout_s,
-                counterexample_min_size,
-                counterexample_max_size,
-                counterexample_timeout_s,
+    def record(k: int, result: EquationResult) -> None:
+        nonlocal last_save
+        equation, description = equations[k]
+        result.index = k
+        result.description = description
+        results.append(result)
+        done.add(k)
+        counts[result.status] = counts.get(result.status, 0) + 1
+        if result.status == "proved":
+            if result.prover != "congruence":
+                logger.info(f"  [{k+1}] {description}: PROVED by {result.prover} in {result.time_s:.1f}s")
+            lemma = equation if equation.endswith(".") else f"{equation}."
+            if use_lemmas and result.prover != "congruence":
+                proven_lemmas.append(lemma)
+            if congruence is not None:
+                congruence.add_formula(lemma)
+        elif result.status == "refuted":
+            logger.error(f"  [{k+1}] {description}: REFUTED (counterexample found): {equation}")
+            if result.counterexample:
+                counterexamples_dir.mkdir(parents=True, exist_ok=True)
+                counter_path = counterexamples_dir / f"counter_{k:06d}.model"
+                counter_path.write_text(result.counterexample, encoding="utf-8")
+        else:
+            logger.warning(f"  [{k+1}] {description}: UNKNOWN after {result.time_s:.0f}s: {equation}")
+        now = time.time()
+        if now - last_save > 30:
+            save_checkpoint(checkpoint_path, results, proven_lemmas, first_undone())
+            last_save = now
+            elapsed = now - start_time
+            n_done = len(done)
+            logger.info(
+                f"Progress: {n_done}/{total} done (proved {counts['proved']}, "
+                f"unknown {counts['unknown']}, refuted {counts['refuted']}), "
+                f"elapsed {elapsed/3600:.2f}h"
             )
 
-            results.append(result)
-
-            # Log result
-            if result.status == "proved":
-                logger.info(f"  ✓ PROVED by {result.prover} in {result.time_s:.2f}s")
-                # Add to lemmas
+    queue = deque(order)
+    with ProcessPoolExecutor(max_workers=max(1, parallel)) as pool:
+        running: dict[Any, int] = {}
+        while queue or running:
+            while queue and len(running) < max(1, parallel):
+                k = queue.popleft()
+                equation, description = equations[k]
+                if congruence is not None and congruence.equation_holds(equation):
+                    record(k, EquationResult(equation=equation, status="proved", prover="congruence"))
+                    continue
+                current_axioms = axiom_base + seed_lemmas
                 if use_lemmas:
-                    lemma = equation if equation.endswith(".") else f"{equation}."
-                    proven_lemmas.append(lemma)
-            elif result.status == "refuted":
-                logger.error(f"  ✗ REFUTED (counterexample found)")
-                # Save counterexample
-                if result.counterexample:
-                    counterexamples_dir.mkdir(parents=True, exist_ok=True)
-                    counter_path = counterexamples_dir / f"counter_{i:04d}.model"
-                    counter_path.write_text(result.counterexample, encoding="utf-8")
-                    logger.error(f"    Saved counterexample to {counter_path}")
-            else:
-                logger.warning(f"  ? UNKNOWN (no proof or counterexample in time limit)")
-
-            # Save checkpoint after each equation
-            save_checkpoint(checkpoint_path, results, proven_lemmas, i + 1)
-    
-    else:
-        # Parallel verification with batch processing for sound lemma sharing
-        logger.info(f"Running parallel verification with {parallel} workers")
-        
-        batch_size = parallel
-        i = start_index
-        
-        while i < total:
-            batch_end = min(i + batch_size, total)
-            batch_equations = equations[i:batch_end]
-            
-            # Build axioms for this batch (only use lemmas proven BEFORE this batch)
-            current_axioms = axiom_base.copy()
-            if use_lemmas:
-                lemmas_to_add = proven_lemmas[-max_lemmas:] if max_lemmas > 0 else proven_lemmas
-                current_axioms.extend(lemmas_to_add)
-            
-            logger.info(f"\n[Batch {i+1}-{batch_end}/{total}] Verifying {len(batch_equations)} equations in parallel")
-            logger.info(f"  Using {len(current_axioms)} axioms ({len(axiom_base)} base + {len(lemmas_to_add) if use_lemmas else 0} lemmas)")
-            
-            # Prepare worker arguments
-            worker_args = [
-                (
-                    eq,
-                    desc,
+                    current_axioms = current_axioms + (
+                        proven_lemmas[-max_lemmas:] if max_lemmas > 0 else proven_lemmas
+                    )
+                future = pool.submit(
+                    _verify_equation_worker,
+                    equation,
+                    description,
                     current_axioms,
                     proof_timeout_s,
                     counterexample_min_size,
                     counterexample_max_size,
                     counterexample_timeout_s,
                     no_tptp,
+                    axiom_base,
+                    use_prover9,
+                    tptp_include,
                 )
-                for eq, desc in batch_equations
-            ]
-            
-            # Run batch in parallel
-            with mp.Pool(processes=parallel) as pool:
-                batch_results = pool.starmap(_verify_equation_worker, worker_args)
-            
-            # Process batch results
-            for idx, result in enumerate(batch_results):
-                eq_idx = i + idx
-                equation, description = batch_equations[idx]
-                
-                results.append(result)
-                
-                # Log result
-                logger.info(f"  [{eq_idx+1}/{total}] {description}")
-                if result.status == "proved":
-                    logger.info(f"    ✓ PROVED by {result.prover} in {result.time_s:.2f}s")
-                    # Add to lemmas for NEXT batch
-                    if use_lemmas:
-                        lemma = equation if equation.endswith(".") else f"{equation}."
-                        proven_lemmas.append(lemma)
-                elif result.status == "refuted":
-                    logger.error(f"    ✗ REFUTED (counterexample found)")
-                    if result.counterexample:
-                        counterexamples_dir.mkdir(parents=True, exist_ok=True)
-                        counter_path = counterexamples_dir / f"counter_{eq_idx:04d}.model"
-                        counter_path.write_text(result.counterexample, encoding="utf-8")
-                        logger.error(f"      Saved counterexample to {counter_path}")
-                else:
-                    logger.warning(f"    ? UNKNOWN")
-            
-            # Save checkpoint after each batch
-            i = batch_end
-            save_checkpoint(checkpoint_path, results, proven_lemmas, i)
+                running[future] = k
+            if not running:
+                continue
+            finished, _ = wait(list(running), return_when=FIRST_COMPLETED)
+            for future in finished:
+                k = running.pop(future)
+                try:
+                    result = future.result()
+                except Exception as exc:  # worker crash: record as unknown
+                    logger.error(f"  [{k+1}] worker error: {exc}")
+                    result = EquationResult(equation=equations[k][0], status="unknown")
+                record(k, result)
+
+    # Unknowns may follow from equations proven later.
+    if congruence is not None:
+        upgraded = 0
+        for r in results:
+            if r.status == "unknown" and congruence.equation_holds(r.equation):
+                r.status, r.prover = "proved", "congruence"
+                upgraded += 1
+        if upgraded:
+            logger.info(f"Congruence closure upgraded {upgraded} unknown equations to proved")
+    save_checkpoint(checkpoint_path, results, proven_lemmas, first_undone())
 
     # Generate summary
     proved_count = sum(1 for r in results if r.status == "proved")
@@ -1010,6 +1040,35 @@ def main():
     )
 
     parser.add_argument(
+        "--seed-lemmas",
+        type=Path,
+        action="append",
+        default=[],
+        help="File of already-proven statements (e.g. input/free_icrp_axioms.txt from a "
+        "prover-based free_icrp.py run, NOT a --models run). Added to every prover call "
+        "and to the congruence closure. Repeatable.",
+    )
+
+    parser.add_argument(
+        "--no-congruence",
+        action="store_true",
+        help="Disable the congruence-closure fast path",
+    )
+
+    parser.add_argument(
+        "--no-prover9",
+        action="store_true",
+        help="Do not run Prover9 (use only TPTP provers)",
+    )
+
+    parser.add_argument(
+        "--tptp-provers",
+        type=str,
+        default="auto",
+        help="Comma-separated TPTP provers (vampire,zipperposition) or 'auto' for all found",
+    )
+
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -1033,6 +1092,16 @@ def main():
         from axioms import rsi_icrp_axioms as axiom_text
 
     axiom_base = [line.strip() for line in axiom_text.strip().split("\n") if line.strip()]
+    seed_lemmas = load_seed_lemmas(args.seed_lemmas)
+    if args.seed_lemmas:
+        logging.getLogger(__name__).info(
+            f"Loaded {len(seed_lemmas)} seed lemmas from {[str(p) for p in args.seed_lemmas]}"
+        )
+    tptp_include = (
+        None
+        if args.tptp_provers.strip().lower() == "auto"
+        else [n.strip() for n in args.tptp_provers.split(",") if n.strip()]
+    )
 
     # Run verification
     success = asyncio.run(
@@ -1050,6 +1119,10 @@ def main():
             no_tptp=args.no_tptp,
             parallel=args.parallel,
             generator_index=args.generator_index,
+            seed_lemmas=seed_lemmas,
+            use_congruence=not args.no_congruence,
+            use_prover9=not args.no_prover9,
+            tptp_include=tptp_include,
         )
     )
 
