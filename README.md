@@ -138,6 +138,106 @@ python -m pytest test_algebra_export.py -v   # Export/import tests
 python -m pytest test_term_parser.py -v      # Term parser tests (requires Node.js + jsdom)
 ```
 
+## Verifying candidate free algebras
+
+`verify_free_icrp.py` verifies that a candidate free 1-generated iCRP (computed from the product of RSI models) is actually free by proving all operation table equations from the iCRP axioms.
+
+### Why verification is cheaper than enumeration
+
+The standard approach (`free_icrp.py`) enumerates terms level-by-level and uses Prover9/Mace4 to decide equalities. For the free 1-generated iCRP, this is expensive. If we already have a *candidate* free algebra (from the product of known RSI iCRPs), we can verify it much more efficiently:
+
+1. **Closure is automatic**: The candidate is constructed as a subalgebra, so closure under operations is guaranteed.
+2. **Distinctness is automatic**: Elements are distinct because they differ in some RSI model (no collapsing needed).
+3. **Only table equations need proving**: For each operation table entry (e.g., `a * b = c`), we prove `rep(a) * rep(b) = rep(c)` from the iCRP axioms.
+
+### Usage
+
+```bash
+# Verify a candidate algebra (JSON format recommended)
+python verify_free_icrp.py path/to/candidate.json -o verification_output/
+
+# Resume from checkpoint (for long-running verifications)
+python verify_free_icrp.py path/to/candidate.json --resume
+
+# Adjust timeouts (in seconds)
+python verify_free_icrp.py path/to/candidate.json --proof-timeout 60 --counter-timeout 120
+
+# Disable TPTP provers (Prover9 + Mace4 only)
+python verify_free_icrp.py path/to/candidate.json --no-tptp
+
+# Disable lemma reuse (prove each equation independently)
+python verify_free_icrp.py path/to/candidate.json --no-lemmas
+
+# Limit number of lemmas used (to control theory size)
+python verify_free_icrp.py path/to/candidate.json --max-lemmas 50
+```
+
+### Input formats
+
+The script accepts:
+- **JSON** (`.json`): Recommended. Must include `"isFree": true` and `"representativeTerms"` (exported by `free_icrp.py` or `algebra_export.py`).
+- **Mace4 model** (`.model`): Requires representative terms in a comment: `% representative_terms: ["e", "x", ...]`.
+- **UACalc** (`.ua`): Requires a companion `.json` file with the same stem.
+
+Example: Export a candidate for verification:
+```python
+from algebra_export import export_model_all_formats
+from pyp9m4 import Model
+
+model = Model.from_file("model_outputs/candidate.model")[0]
+# Add representative terms metadata (see free_icrp.py for how to generate these)
+rep_terms = ["e", "x", "x * x", "x \\ e", ...]
+
+# Export with terms
+import json
+from pathlib import Path
+export_data = {
+    "name": "Candidate F(1)",
+    "cardinality": len(rep_terms),
+    "operations": { ... },  # Extract from model
+    "isFree": True,
+    "representativeTerms": rep_terms,
+}
+Path("candidate.json").write_text(json.dumps(export_data, indent=2))
+```
+
+### Verification process
+
+For each operation table entry:
+1. **Prove** the equation using Prover9 and TPTP provers (Vampire, Zipperposition) with a configurable timeout.
+2. **Reuse lemmas**: Previously proven equations are added to the theory (configurable via `--max-lemmas`).
+3. **Search for counterexamples**: If no proof is found, use Mace4 to search for a counterexample in domain sizes 2–10 (configurable).
+4. **Checkpoint progress**: Results are saved after each equation, so long verifications can be resumed with `--resume`.
+
+### Output
+
+The script produces:
+- **`verification_summary.json`**: Overall results (proved/refuted/unknown counts) and per-equation details.
+- **`verification_checkpoint.json`**: Resumable checkpoint (updated after each equation).
+- **`counterexamples/counter_*.model`**: Mace4 models for refuted equations (if any).
+
+### Interpreting results
+
+- **All equations proved** → The candidate is a valid free 1-generated iCRP.
+- **Some equations refuted** → The candidate is NOT free (RSI list incomplete; counterexamples saved).
+- **Some equations unknown** → Verification incomplete (increase timeouts or use stronger provers).
+
+### Tests
+
+Run the test suite (uses mocks; does not require provers):
+```bash
+pip install pytest pytest-asyncio
+python -m pytest test_verify_free_icrp.py -v
+```
+
+For integration tests with real provers:
+```bash
+# Create a small test algebra
+python free_icrp.py --max-level 1 -o test_output/small_free.pdf
+# Verify it
+python verify_free_icrp.py test_output/small_free.json --proof-timeout 10
+```
+
 ## Free-algebra search (Prover9 / Mace4 / Vampire / Zipperposition)
 
 `free_bciwme.py` and `free_icrp.py` classify the free-algebra order by racing solvers in `free_algebra.decide`:
