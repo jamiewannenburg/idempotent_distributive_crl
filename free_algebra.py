@@ -1820,9 +1820,10 @@ async def classify_term_order(
                 equivalence_classes.note_separator(
                     lower, upper, _separator_from_values(equivalence_classes, lower, upper)
                 )
-    
-        # If we reach here, we hit max_level without closing
-        return False
+
+    # Hit max_level without finding a closed level (must be outside finally:
+    # a return in finally would override any return from the try block).
+    return False
 
 
 def export_free_algebra(

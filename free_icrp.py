@@ -218,10 +218,12 @@ if __name__ == "__main__":
         unknown_file.write(formula + "\n")
         unknown_file.flush()
     
-    async def classify() -> bool:
-        is_closed = None
+    # Capture closure from the coroutine; _run_asyncio only reports completion.
+    is_closed_holder: list[bool] = [False]
+
+    async def classify() -> None:
         try:
-            is_closed = await classify_term_order(
+            is_closed_holder[0] = await classify_term_order(
                 operations,
                 variables,
                 max_level=args.max_level,
@@ -239,9 +241,6 @@ if __name__ == "__main__":
                 save_incomparable=save_incomparable,
             )
             await _drain_subprocess_transports()
-            return is_closed
-        except Exception as e:
-            raise
         finally:
             axioms_file.close()
             unknown_file.close()
@@ -252,16 +251,9 @@ if __name__ == "__main__":
                     f"(mention terms never generated this run)"
                 )
 
-    # Track closure status
-    is_closed_result = [False]  # Use list to allow mutation in classify()
-    
-    async def classify_wrapper():
-        is_closed_result[0] = await classify()
-        return is_closed_result[0]
-    
     try:
-        completed = _run_asyncio(classify_wrapper())
-        is_closed = is_closed_result[0]
+        completed = _run_asyncio(classify())
+        is_closed = is_closed_holder[0]
     finally:
         if not axioms_file.closed:
             axioms_file.close()
@@ -269,29 +261,31 @@ if __name__ == "__main__":
             unknown_file.close()
         if not incomparable_file.closed:
             incomparable_file.close()
-    
+
     # Only export if the run completed (not interrupted by Ctrl+C)
     if completed:
         output_path = Path(args.output)
-        
-        # Export algebra (marks as free only if closed)
+
         export_paths = export_free_algebra(
             equivalence_classes,
             operations,
-            output_path.with_suffix(""),  # Remove .pdf suffix for base name
+            output_path.with_suffix(""),
             "Free 1-generated iCRP",
             generator_term="x",
             is_closed=is_closed,
         )
-        
+
+        n_elems = len(equivalence_classes.representatives())
         if is_closed:
-            print(f"\nExported free algebra (closed with {len(equivalence_classes.representatives())} elements):")
+            print(f"\nExported free algebra (closed with {n_elems} elements):")
         else:
-            print(f"\nExported partial algebra (NOT closed, reached max level {args.max_level}):")
+            print(
+                f"\nExported partial algebra "
+                f"(NOT closed, reached max level {args.max_level}, {n_elems} elements):"
+            )
         print(f"  Mace4:  {export_paths['model']}")
         print(f"  JSON:   {export_paths['json']}")
-        
-        # Generate PDF
+
         write_free_algebra_pdf(equivalence_classes, unknowns, args.output, operations, "ICRP")
     else:
         print("\nRun interrupted, skipping export.")
