@@ -83,7 +83,15 @@ def _find_term_right(s: str, start: int) -> tuple[int, int]:
 
 
 def replace_infix_le(tptp: str, pred: str = "tptp1") -> str:
-    """Rewrite remaining infix ``<=`` atoms to ``pred(Left,Right)`` (skip ``<=>``)."""
+    """Rewrite remaining infix ``<=`` atoms to ``pred(Left,Right)`` (skip ``<=>``).
+
+    ``%`` comment lines are left untouched.
+    """
+    if "\n" in tptp:
+        return "\n".join(
+            line if line.lstrip().startswith("%") else replace_infix_le(line, pred)
+            for line in tptp.split("\n")
+        )
     out: list[str] = []
     i = 0
     while True:
@@ -157,7 +165,25 @@ def convert_ladr_to_tptp(ladr_text: str) -> str:
             "ladr_to_tptp produced no usable TPTP formulas"
             + _conversion_failure_detail(stdout, completed.stderr or "", completed.returncode)
         )
-    return replace_infix_le(stdout)
+    return replace_infix_le(stdout, pred=_le_predicate_name(stdout))
+
+
+_LE_MAPPING_RE = re.compile(r"(?m)^%\s*\(arity 2\)\s+<=\s+(\w+)\s*$")
+
+
+def _le_predicate_name(tptp: str) -> str:
+    """Return the predicate ``ladr_to_tptp`` chose for ``<=``.
+
+    The converter renames illegal symbols to ``tptp0``, ``tptp1``, ... in order of
+    first appearance and lists the mapping in a ``%`` header. Infix ``<=`` atoms
+    that it leaves behind must use that same name, otherwise ``<=`` collides
+    with e.g. ``\\`` (also binary) and Vampire rejects the problem as ill-sorted.
+    """
+    match = _LE_MAPPING_RE.search(tptp)
+    if match:
+        return match.group(1)
+    used = {int(n) for n in re.findall(r"\btptp(\d+)\b", tptp)}
+    return f"tptp{max(used, default=-1) + 1}"
 
 
 def parse_szs_status(line: str) -> str | None:

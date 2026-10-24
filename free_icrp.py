@@ -12,6 +12,7 @@ from free_algebra import (
     _drain_subprocess_transports,
     _run_asyncio,
     classify_term_order,
+    export_free_algebra,
     write_free_algebra_pdf,
 )
 from tptp_provers import discover_tptp_provers
@@ -217,9 +218,12 @@ if __name__ == "__main__":
         unknown_file.write(formula + "\n")
         unknown_file.flush()
     
+    # Capture closure from the coroutine; _run_asyncio only reports completion.
+    is_closed_holder: list[bool] = [False]
+
     async def classify() -> None:
         try:
-            await classify_term_order(
+            is_closed_holder[0] = await classify_term_order(
                 operations,
                 variables,
                 max_level=args.max_level,
@@ -249,6 +253,7 @@ if __name__ == "__main__":
 
     try:
         completed = _run_asyncio(classify())
+        is_closed = is_closed_holder[0]
     finally:
         if not axioms_file.closed:
             axioms_file.close()
@@ -256,7 +261,33 @@ if __name__ == "__main__":
             unknown_file.close()
         if not incomparable_file.closed:
             incomparable_file.close()
+
+    # Only export if the run completed (not interrupted by Ctrl+C)
+    if completed:
+        output_path = Path(args.output)
+
+        export_paths = export_free_algebra(
+            equivalence_classes,
+            operations,
+            output_path.with_suffix(""),
+            "Free 1-generated iCRP",
+            generator_term="x",
+            is_closed=is_closed,
+        )
+
+        n_elems = len(equivalence_classes.representatives())
+        if is_closed:
+            print(f"\nExported free algebra (closed with {n_elems} elements):")
+        else:
+            print(
+                f"\nExported partial algebra "
+                f"(NOT closed, reached max level {args.max_level}, {n_elems} elements):"
+            )
+        print(f"  Mace4:  {export_paths['model']}")
+        print(f"  JSON:   {export_paths['json']}")
+
         write_free_algebra_pdf(equivalence_classes, unknowns, args.output, operations, "ICRP")
-    if not completed:
+    else:
+        print("\nRun interrupted, skipping export.")
         sys.exit(130)
 
