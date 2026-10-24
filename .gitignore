@@ -3,3 +3,13 @@ __pycache__/
 *.pyc
 .tptp_tmp/
 *py.class
+
+# verify_free_icrp.py progress files (not committed)
+verification_output*/
+verification_checkpoint.json
+verify.log
+verify_pipeline.log
+*.old-*
+# Isabelle build logs
+isabelle/build.log
+isabelle/output/
