@@ -1,0 +1,14 @@
+session RSI11 = HOL +
+  options [document = false, timeout = 90000, threads = 1]
+  theories
+    RSI_iCRP_11_Search
+
+session RSI11_fast = HOL +
+  options [document = false, timeout = 90000, threads = 1]
+  theories
+    RSI_iCRP_11_Search_fast
+
+session RSI12 = HOL +
+  options [document = false, timeout = 260000, threads = 1]
+  theories
+    RSI_iCRP_12_Search
